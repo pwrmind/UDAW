@@ -34,24 +34,26 @@
 
 <script type="module">
 // ==========================================
-// 1. AUDIO ENGINE (Web Audio API)
+// 1. AUDIO ENGINE (расширенный)
 // ==========================================
 class DrumSynth {
   constructor(ctx) { this.ctx = ctx; }
   playKick(time, output, params = {}) {
     const decay = (params.decay || 300) / 1000;
+    const mod = (params.envMod || 50) / 100;
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
     osc.connect(gain); gain.connect(output);
     osc.frequency.setValueAtTime(150, time);
-    osc.frequency.exponentialRampToValueAtTime(0.01, time + decay);
+    osc.frequency.exponentialRampToValueAtTime(0.01, time + decay * (1 + mod * 2));
     gain.gain.setValueAtTime(1, time);
-    gain.gain.exponentialRampToValueAtTime(0.01, time + decay);
-    osc.start(time); osc.stop(time + decay);
+    gain.gain.exponentialRampToValueAtTime(0.01, time + decay * (1 + mod * 2));
+    osc.start(time); osc.stop(time + decay * (1 + mod * 2));
   }
   playSnare(time, output, params = {}) {
     const decay = (params.decay || 200) / 1000;
-    const bufferSize = this.ctx.sampleRate * decay;
+    const mod = (params.envMod || 50) / 100;
+    const bufferSize = this.ctx.sampleRate * (decay + mod * 0.3);
     const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
     const data = buffer.getChannelData(0);
     for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
@@ -60,28 +62,58 @@ class DrumSynth {
     filter.type = 'highpass'; filter.frequency.value = 1000;
     const gain = this.ctx.createGain();
     gain.gain.setValueAtTime(0.7, time);
+    gain.gain.exponentialRampToValueAtTime(0.01, time + decay * (1 + mod));
+    noise.connect(filter); filter.connect(gain); gain.connect(output);
+    noise.start(time); noise.stop(time + decay * (1 + mod));
+  }
+  playHihat(time, output, params = {}) {
+    const decay = (params.decay || 100) / 1000;
+    const bufferSize = this.ctx.sampleRate * decay;
+    const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+    const noise = this.ctx.createBufferSource(); noise.buffer = buffer;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'highpass'; filter.frequency.value = 5000;
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0.5, time);
     gain.gain.exponentialRampToValueAtTime(0.01, time + decay);
     noise.connect(filter); filter.connect(gain); gain.connect(output);
     noise.start(time); noise.stop(time + decay);
   }
+  playTom(time, output, params = {}) {
+    const decay = (params.decay || 400) / 1000;
+    const mod = (params.envMod || 50) / 100;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.connect(gain); gain.connect(output);
+    osc.frequency.setValueAtTime(120, time);
+    osc.frequency.exponentialRampToValueAtTime(0.01, time + decay * (1 + mod));
+    gain.gain.setValueAtTime(0.8, time);
+    gain.gain.exponentialRampToValueAtTime(0.01, time + decay * (1 + mod));
+    osc.start(time); osc.stop(time + decay * (1 + mod));
+  }
 }
 
-class BassSynth {
+class SynthVoice {
   constructor(ctx) { this.ctx = ctx; }
   playNote(frequency, time, output, params = {}) {
     if (!frequency) return;
-    const decay = (params.decay || 180) / 1000;
+    const decay = (params.decay || 200) / 1000;
+    const mod = (params.envMod || 50) / 100;
     const osc = this.ctx.createOscillator();
     const filter = this.ctx.createBiquadFilter();
     const gain = this.ctx.createGain();
-    osc.type = 'sawtooth'; osc.frequency.setValueAtTime(frequency, time);
-    filter.type = 'lowpass'; filter.Q.setValueAtTime(10, time);
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(frequency, time);
+    filter.type = 'lowpass';
+    filter.Q.setValueAtTime(10 + mod * 10, time);
     filter.frequency.setValueAtTime(1200, time);
-    filter.frequency.exponentialRampToValueAtTime(150, time + decay * 0.8);
+    filter.frequency.exponentialRampToValueAtTime(150 - mod * 50, time + decay * 0.8);
     gain.gain.setValueAtTime(0.4, time);
-    gain.gain.exponentialRampToValueAtTime(0.01, time + decay);
+    gain.gain.exponentialRampToValueAtTime(0.01, time + decay * (1 + mod));
     osc.connect(filter); filter.connect(gain); gain.connect(output);
-    osc.start(time); osc.stop(time + decay);
+    osc.start(time); osc.stop(time + decay * (1 + mod));
   }
 }
 
@@ -138,7 +170,7 @@ class SequencerScheduler {
 }
 
 // ==========================================
-// 2. UI COMPONENTS (Web Components)
+// 2. UI COMPONENTS (добавлена кнопка удаления)
 // ==========================================
 class XKnob extends HTMLElement {
   static get observedAttributes() { return ['min', 'max', 'value', 'label']; }
@@ -322,6 +354,9 @@ class XChannelStrip extends HTMLElement {
     this.shadowRoot.querySelector('.edit-btn').addEventListener('click', () => {
       this.dispatchEvent(new CustomEvent('open-settings', {detail:{trackId, label:this.getAttribute('label')}, bubbles:true, composed:true}));
     });
+    this.shadowRoot.querySelector('.del-btn').addEventListener('click', () => {
+      this.dispatchEvent(new CustomEvent('delete-track', {detail:{trackId}, bubbles:true, composed:true}));
+    });
   }
   _emit(param, value, trackId) {
     this.dispatchEvent(new CustomEvent('channel-change', {detail:{trackId, param, value:parseFloat(value)}, bubbles:true, composed:true}));
@@ -333,8 +368,9 @@ class XChannelStrip extends HTMLElement {
         :host { display: flex; align-items: center; background: #0d0d14; padding: 4px 8px; border-radius: 4px; border: 1px solid #1a1a26; gap: 6px; }
         .track-name { width: 50px; font-size: 9px; font-weight: 900; color: var(--neon-cyan); text-transform: uppercase; letter-spacing: 0.5px; text-shadow: 0 0 4px rgba(0,243,255,0.3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .controls { display: flex; align-items: center; gap: 4px; }
-        .edit-btn { background: none; border: 1px solid #333; color: var(--text-dim); cursor: pointer; font-size: 10px; border-radius: 3px; padding: 2px 4px; margin-left: 4px; }
+        .edit-btn, .del-btn { background: none; border: 1px solid #333; color: var(--text-dim); cursor: pointer; font-size: 10px; border-radius: 3px; padding: 2px 4px; margin-left: 4px; }
         .edit-btn:hover { color: var(--neon-cyan); border-color: var(--neon-cyan); }
+        .del-btn:hover { color: var(--neon-magenta); border-color: var(--neon-magenta); }
       </style>
       <div class="track-name">${label}</div>
       <div class="controls">
@@ -342,7 +378,8 @@ class XChannelStrip extends HTMLElement {
         <x-knob data-param="gain" min="0" max="100" value="80" label="VOL"></x-knob>
         <x-knob data-param="pan" min="-100" max="100" value="0" label="PAN"></x-knob>
       </div>
-      <button class="edit-btn" title="Synth Settings">⚙</button>`;
+      <button class="edit-btn" title="Synth Settings">⚙</button>
+      <button class="del-btn" title="Delete Track">✕</button>`;
   }
 }
 customElements.define('x-channel-strip', XChannelStrip);
@@ -543,7 +580,10 @@ class XAddTrackBar extends HTMLElement {
         <select id="type">
           <option value="kick">🥁 KICK</option>
           <option value="snare">🥁 SNARE</option>
-          <option value="bass">🎸 303 BASS</option>
+          <option value="hihat">🔔 HIHAT</option>
+          <option value="tom">🪘 TOM</option>
+          <option value="synth">🎹 SYNTH</option>
+          <option value="bass">🎸 BASS</option>
         </select>
         <button id="add">+ ADD TRACK</button>
       </div>`;
@@ -571,11 +611,11 @@ class XModalSynth extends HTMLElement {
       <style>
         dialog { background: transparent; border: none; padding: 0; outline: none; }
         dialog::backdrop { background: rgba(3,3,5,0.85); backdrop-filter: blur(4px); }
-        .body { background: #0a0a0f; padding: 16px; width: 220px; border: 1px solid var(--border-color); border-radius: 6px; position: relative; }
+        .body { background: #0a0a0f; padding: 16px; width: 240px; border: 1px solid var(--border-color); border-radius: 6px; position: relative; }
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1px dashed #333; padding-bottom: 6px; }
         .title { font-size: 10px; color: var(--neon-cyan); font-weight: bold; text-shadow: 0 0 4px rgba(0,243,255,0.5); }
         #close { background: none; border: none; color: var(--neon-magenta); cursor: pointer; font-weight: bold; font-size: 14px; }
-        .knobs { display: flex; justify-content: space-around; }
+        .knobs { display: flex; justify-content: space-around; gap: 8px; }
       </style>
       <dialog>
         <div class="body">
@@ -585,6 +625,7 @@ class XModalSynth extends HTMLElement {
           </div>
           <div class="knobs">
             <x-knob data-param="decay" min="50" max="1000" value="300" label="Decay"></x-knob>
+            <x-knob data-param="envMod" min="0" max="100" value="50" label="Env.Mod"></x-knob>
           </div>
         </div>
       </dialog>`;
@@ -627,7 +668,7 @@ class XSequencer extends HTMLElement {
     this.masterAnalyser.connect(this.recordDest);
 
     this.drumSynth = new DrumSynth(this.ctx);
-    this.bassSynth = new BassSynth(this.ctx);
+    this.synthVoice = new SynthVoice(this.ctx);
     this.scheduler = new SequencerScheduler(this.ctx, (step, time) => this._processStep(step, time));
     
     this.tracks = [];
@@ -643,9 +684,9 @@ class XSequencer extends HTMLElement {
     this._bindEvents();
     
     // Default tracks
-    this._addTrack('kick', 'Kick Drum');
-    this._addTrack('snare', 'Snare Hit');
-    this._addTrack('bass', 'Acid Bass');
+    this._addTrack('kick', 'Kick');
+    this._addTrack('snare', 'Snare');
+    this._addTrack('bass', 'Bass');
   }
 
   _addTrack(type, label, matrix, timeline, params) {
@@ -656,21 +697,30 @@ class XSequencer extends HTMLElement {
     this.tracks.push({
       id: 't_' + Date.now() + Math.random().toString(36).substr(2,4),
       type, label, mute: false, gainNode: gain, pannerNode: pan,
-      matrix: matrix || Array(16).fill(type === 'bass' ? 0 : false),
+      matrix: matrix || Array(16).fill((type === 'synth' || type === 'bass') ? 0 : false),
       timeline: timeline || Array(8).fill(true),
-      synthParams: params || { decay: type === 'bass' ? 180 : 300 }
+      synthParams: params || { decay: (type === 'hihat'? 100 : 300), envMod: 50 }
     });
+    this._refreshUI();
+  }
+
+  _removeTrack(trackId) {
+    const idx = this.tracks.findIndex(t => t.id === trackId);
+    if (idx === -1) return;
+    // Отключаем аудиоузлы
+    const track = this.tracks[idx];
+    track.gainNode.disconnect();
+    track.pannerNode.disconnect();
+    this.tracks.splice(idx, 1);
     this._refreshUI();
   }
 
   _refreshUI() {
     const container = this.shadowRoot.querySelector('#tracks-container');
-    const timelineGrid = this.shadowRoot.querySelector('.timeline-grid');
-    
     container.innerHTML = this.tracks.map(t => {
-      const isBass = t.type === 'bass';
+      const isMelodic = (t.type === 'bass' || t.type === 'synth');
       const cells = Array(16).fill(null).map((_, i) => {
-        if(isBass) return `<x-note-selector data-track-id="${t.id}" data-step="${i}" data-freq="${t.matrix[i]}"></x-note-selector>`;
+        if(isMelodic) return `<x-note-selector data-track-id="${t.id}" data-step="${i}" data-freq="${t.matrix[i] || 0}"></x-note-selector>`;
         const grp = (i>=4 && i<=7) || (i>=12 && i<=15) ? 'B' : 'A';
         return `<x-pad data-track-id="${t.id}" data-step="${i}" color-group="${grp}" ${t.matrix[i]?'active':''}></x-pad>`;
       }).join('');
@@ -700,27 +750,26 @@ class XSequencer extends HTMLElement {
       this._addTrack(type, `${type} ${count}`);
     });
 
-    r.addEventListener('click', (e) => {
-      if(e.target.tagName === 'X-PAD') {
-        const t = this.tracks.find(x => x.id === e.target.dataset.trackId);
-        if(t) { const s = parseInt(e.target.dataset.step); t.matrix[s] = !t.matrix[s]; }
-      }
-      if(e.target.classList.contains('edit-btn')) {
-        // Handled by channel-strip open-settings event
-      }
+    r.addEventListener('delete-track', (e) => {
+      this._removeTrack(e.detail.trackId);
     });
 
+    r.addEventListener('toggle', (e) => {
+      if(e.target.tagName === 'X-PAD') {
+        const t = this.tracks.find(x => x.id === e.target.dataset.trackId);
+        if(t) { const s = parseInt(e.target.dataset.step); t.matrix[s] = e.detail.active; }
+      }
+    });
     r.addEventListener('note-change', (e) => {
       if(e.target.tagName === 'X-NOTE-SELECTOR') {
         const t = this.tracks.find(x => x.id === e.target.dataset.trackId);
         if(t) t.matrix[parseInt(e.target.dataset.step)] = e.detail.freq;
       }
     });
-
     r.addEventListener('timeline-toggle', (e) => {
       if(e.target.tagName === 'X-TIMELINE-CELL') {
         const t = this.tracks.find(x => x.id === e.target.dataset.trackId);
-        if(t) t.timeline[parseInt(e.target.dataset.bar)] = !t.timeline[parseInt(e.target.dataset.bar)];
+        if(t) t.timeline[parseInt(e.target.dataset.bar)] = e.detail.active;
       }
     });
 
@@ -747,10 +796,10 @@ class XSequencer extends HTMLElement {
     r.querySelector('x-storage-panel').addEventListener('storage', (e) => {
       if(e.detail === 'save') {
         localStorage.setItem('cyber_daw', JSON.stringify({tracks: this.tracks.map(t => ({type:t.type,label:t.label,matrix:t.matrix,timeline:t.timeline,synthParams:t.synthParams})), bpm: this.scheduler.bpm}));
-        alert('Pattern Saved to LocalStorage!');
+        alert('Pattern Saved!');
       } else {
         const data = JSON.parse(localStorage.getItem('cyber_daw'));
-        if(!data) return alert('No saved data found.');
+        if(!data) return alert('No saved data.');
         this.tracks = [];
         data.tracks.forEach(t => this._addTrack(t.type, t.label, t.matrix, t.timeline, t.synthParams));
         this.scheduler.bpm = data.bpm;
@@ -786,9 +835,12 @@ class XSequencer extends HTMLElement {
 
     this.tracks.forEach(t => {
       if(t.mute || !t.timeline[currentBar]) return;
-      if(t.type === 'kick' && t.matrix[patternStep]) this.drumSynth.playKick(time, t.gainNode, t.synthParams);
-      else if(t.type === 'snare' && t.matrix[patternStep]) this.drumSynth.playSnare(time, t.gainNode, t.synthParams);
-      else if(t.type === 'bass' && t.matrix[patternStep] > 0) this.bassSynth.playNote(t.matrix[patternStep], time, t.gainNode, t.synthParams);
+      const val = t.matrix[patternStep];
+      if (t.type === 'kick' && val) this.drumSynth.playKick(time, t.gainNode, t.synthParams);
+      else if (t.type === 'snare' && val) this.drumSynth.playSnare(time, t.gainNode, t.synthParams);
+      else if (t.type === 'hihat' && val) this.drumSynth.playHihat(time, t.gainNode, t.synthParams);
+      else if (t.type === 'tom' && val) this.drumSynth.playTom(time, t.gainNode, t.synthParams);
+      else if ((t.type === 'bass' || t.type === 'synth') && val > 0) this.synthVoice.playNote(val, time, t.gainNode, t.synthParams);
     });
   }
 
