@@ -979,6 +979,27 @@ class XSequencer extends HTMLElement {
         .bottom-bar { display:flex; gap:16px; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; }
         .utils { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
         @media (max-width:700px) { :host{padding:10px} .main-grid{gap:10px} .track-row{flex-direction:column;align-items:flex-start;gap:4px} .pads-container{justify-content:flex-start} .bottom-bar{flex-direction:column;gap:10px} .bottom-bar>*{width:100%} }
+        /* Стилизация горизонтального скроллбара */
+.pads-container::-webkit-scrollbar {
+  height: 6px;
+}
+.pads-container::-webkit-scrollbar-track {
+  background: #0a0a0f;
+  border-radius: 3px;
+}
+.pads-container::-webkit-scrollbar-thumb {
+  background: linear-gradient(90deg, #ff0055, #00f3ff);
+  border-radius: 3px;
+  box-shadow: inset 0 0 4px rgba(0,0,0,0.8);
+}
+.pads-container::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(90deg, #00f3ff, #ff0055);
+}
+/* Firefox */
+.pads-container {
+  scrollbar-width: thin;
+  scrollbar-color: #ff0055 #0a0a0f;
+}
       </style>
       <x-rgb-panel><x-master-bar></x-master-bar></x-rgb-panel>
       <div class="main-grid">
