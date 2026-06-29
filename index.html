@@ -1,0 +1,852 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CYBER-DAW // Web Component Studio</title>
+<style>
+  :root {
+    --bg-main: #030305;
+    --bg-panel: #0a0a0f;
+    --bg-element: #14141f;
+    --border-color: #222233;
+    --neon-cyan: #00f3ff;
+    --neon-magenta: #ff0055;
+    --neon-green: #39ff14;
+    --neon-orange: #ff9900;
+    --text-dim: #555577;
+    --text-light: #8888aa;
+    --font-mono: 'Courier New', Courier, monospace;
+  }
+  body {
+    background: var(--bg-main);
+    background-image: radial-gradient(circle at 50% 0%, rgba(0, 243, 255, 0.05) 0%, transparent 50%);
+    display: flex; justify-content: center; align-items: center;
+    min-height: 100vh; margin: 0;
+    font-family: var(--font-mono); color: #fff;
+    overflow-x: hidden;
+  }
+</style>
+</head>
+<body>
+
+<x-sequencer></x-sequencer>
+
+<script type="module">
+// ==========================================
+// 1. AUDIO ENGINE (Web Audio API)
+// ==========================================
+class DrumSynth {
+  constructor(ctx) { this.ctx = ctx; }
+  playKick(time, output, params = {}) {
+    const decay = (params.decay || 300) / 1000;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.connect(gain); gain.connect(output);
+    osc.frequency.setValueAtTime(150, time);
+    osc.frequency.exponentialRampToValueAtTime(0.01, time + decay);
+    gain.gain.setValueAtTime(1, time);
+    gain.gain.exponentialRampToValueAtTime(0.01, time + decay);
+    osc.start(time); osc.stop(time + decay);
+  }
+  playSnare(time, output, params = {}) {
+    const decay = (params.decay || 200) / 1000;
+    const bufferSize = this.ctx.sampleRate * decay;
+    const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+    const noise = this.ctx.createBufferSource(); noise.buffer = buffer;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'highpass'; filter.frequency.value = 1000;
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0.7, time);
+    gain.gain.exponentialRampToValueAtTime(0.01, time + decay);
+    noise.connect(filter); filter.connect(gain); gain.connect(output);
+    noise.start(time); noise.stop(time + decay);
+  }
+}
+
+class BassSynth {
+  constructor(ctx) { this.ctx = ctx; }
+  playNote(frequency, time, output, params = {}) {
+    if (!frequency) return;
+    const decay = (params.decay || 180) / 1000;
+    const osc = this.ctx.createOscillator();
+    const filter = this.ctx.createBiquadFilter();
+    const gain = this.ctx.createGain();
+    osc.type = 'sawtooth'; osc.frequency.setValueAtTime(frequency, time);
+    filter.type = 'lowpass'; filter.Q.setValueAtTime(10, time);
+    filter.frequency.setValueAtTime(1200, time);
+    filter.frequency.exponentialRampToValueAtTime(150, time + decay * 0.8);
+    gain.gain.setValueAtTime(0.4, time);
+    gain.gain.exponentialRampToValueAtTime(0.01, time + decay);
+    osc.connect(filter); filter.connect(gain); gain.connect(output);
+    osc.start(time); osc.stop(time + decay);
+  }
+}
+
+class DelayEffect {
+  constructor(ctx) {
+    this.ctx = ctx;
+    this.input = ctx.createGain(); this.output = ctx.createGain();
+    this.delayNode = ctx.createDelay(2.0);
+    this.feedbackNode = ctx.createGain();
+    this.wetNode = ctx.createGain(); this.dryNode = ctx.createGain();
+    this.input.connect(this.dryNode); this.dryNode.connect(this.output);
+    this.input.connect(this.delayNode);
+    this.delayNode.connect(this.wetNode); this.wetNode.connect(this.output);
+    this.delayNode.connect(this.feedbackNode); this.feedbackNode.connect(this.delayNode);
+    this.setParam('time', 300); this.setParam('feedback', 40); this.setParam('mix', 20);
+  }
+  setParam(param, value) {
+    const now = this.ctx.currentTime;
+    if (param === 'time') this.delayNode.delayTime.linearRampToValueAtTime(value / 1000, now + 0.05);
+    if (param === 'feedback') this.feedbackNode.gain.linearRampToValueAtTime(value / 100, now + 0.05);
+    if (param === 'mix') {
+      const mix = value / 100;
+      this.dryNode.gain.linearRampToValueAtTime(1 - mix, now + 0.05);
+      this.wetNode.gain.linearRampToValueAtTime(mix, now + 0.05);
+    }
+  }
+}
+
+class SequencerScheduler {
+  constructor(ctx, onStep) {
+    this.ctx = ctx; this.onStep = onStep;
+    this.bpm = 120; this.isPlaying = false;
+    this.nextStepTime = 0; this.currentStep = 0;
+    this.lookahead = 25; this.scheduleAhead = 0.1;
+  }
+  start() {
+    if (this.isPlaying) return;
+    this.isPlaying = true; this.currentStep = 0;
+    this.nextStepTime = this.ctx.currentTime;
+    this._schedule();
+  }
+  stop() { this.isPlaying = false; clearTimeout(this.timerId); }
+  _schedule() {
+    while (this.nextStepTime < this.ctx.currentTime + this.scheduleAhead) {
+      this.onStep(this.currentStep, this.nextStepTime);
+      this._advance();
+    }
+    this.timerId = setTimeout(() => this._schedule(), this.lookahead);
+  }
+  _advance() {
+    this.nextStepTime += 0.25 * (60.0 / this.bpm);
+    this.currentStep++;
+  }
+}
+
+// ==========================================
+// 2. UI COMPONENTS (Web Components)
+// ==========================================
+class XKnob extends HTMLElement {
+  static get observedAttributes() { return ['min', 'max', 'value', 'label']; }
+  constructor() { super(); this.attachShadow({mode:'open'}); this.startY=0; this.startVal=0; }
+  connectedCallback() { this._updateProps(); this.render(); this._setupEvents(); }
+  attributeChangedCallback() { this._updateProps(); this._updateVisuals(); }
+  _updateProps() {
+    this.min = parseFloat(this.getAttribute('min')) || 0;
+    this.max = parseFloat(this.getAttribute('max')) || 100;
+    this.value = parseFloat(this.getAttribute('value')) || 50;
+    this.label = this.getAttribute('label') || '';
+  }
+  _setupEvents() {
+    const knob = this.shadowRoot.querySelector('.knob-circle');
+    const onMove = (e) => {
+      const deltaY = this.startY - e.clientY;
+      const range = this.max - this.min;
+      let newVal = this.startVal + (deltaY / 150) * range;
+      this.value = Math.max(this.min, Math.min(this.max, newVal));
+      this._updateVisuals();
+      this.dispatchEvent(new Event('input', {bubbles:true}));
+    };
+    const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+    knob.addEventListener('mousedown', (e) => {
+      e.preventDefault(); this.startY = e.clientY; this.startVal = this.value;
+      document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp);
+    });
+  }
+  _updateVisuals() {
+    if(!this.shadowRoot) return;
+    const percent = (this.value - this.min) / (this.max - this.min);
+    const deg = -135 + percent * 270;
+    this.shadowRoot.querySelector('.pointer').style.transform = `rotate(${deg}deg)`;
+    this.shadowRoot.querySelector('.val').textContent = Math.round(this.value);
+  }
+  render() {
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host { display: inline-flex; flex-direction: column; align-items: center; width: 42px; user-select: none; }
+        .label { font-size: 8px; color: var(--text-dim); margin-bottom: 2px; text-transform: uppercase; font-weight: bold; }
+        .knob-circle { width: 26px; height: 26px; background: #1a1a26; border: 1px solid var(--border-color); border-radius: 50%; position: relative; cursor: ns-resize; box-shadow: inset 0 2px 4px rgba(0,0,0,0.8); }
+        .pointer { width: 2px; height: 10px; background: var(--neon-cyan); position: absolute; top: 2px; left: 12px; transform-origin: bottom center; box-shadow: 0 0 4px var(--neon-cyan); }
+        .val { font-size: 8px; color: var(--text-light); margin-top: 2px; font-weight: bold; }
+      </style>
+      <div class="label">${this.label}</div>
+      <div class="knob-circle"><div class="pointer"></div></div>
+      <div class="val">0</div>`;
+    this._updateVisuals();
+  }
+}
+customElements.define('x-knob', XKnob);
+
+class XLedButton extends HTMLElement {
+  static get observedAttributes() { return ['active', 'label']; }
+  constructor() { super(); this.attachShadow({mode:'open'}); }
+  connectedCallback() { this.render(); this.shadowRoot.querySelector('.btn').addEventListener('click', () => {
+    this.toggleAttribute('active');
+    this.dispatchEvent(new CustomEvent('change', {detail:{active:this.hasAttribute('active')}, bubbles:true, composed:true}));
+  }); }
+  attributeChangedCallback() {
+    const btn = this.shadowRoot?.querySelector('.btn');
+    const led = this.shadowRoot?.querySelector('.led');
+    if(btn) btn.classList.toggle('active', this.hasAttribute('active'));
+    if(led) led.classList.toggle('active', this.hasAttribute('active'));
+  }
+  render() {
+    const label = this.getAttribute('label') || 'M';
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host { display: inline-block; user-select: none; }
+        .btn { display: flex; align-items: center; gap: 4px; background: #1a1a26; border: 1px solid var(--border-color); border-radius: 3px; color: var(--text-dim); padding: 2px 6px; font-size: 9px; cursor: pointer; font-weight: bold; font-family: var(--font-mono); }
+        .btn.active { color: #fff; border-color: var(--neon-magenta); }
+        .led { width: 5px; height: 5px; background: #333; border-radius: 50%; }
+        .led.active { background: var(--neon-magenta); box-shadow: 0 0 6px var(--neon-magenta); }
+      </style>
+      <div class="btn"><div class="led"></div><span>${label}</span></div>`;
+    this.attributeChangedCallback();
+  }
+}
+customElements.define('x-led-button', XLedButton);
+
+class XPad extends HTMLElement {
+  static get observedAttributes() { return ['active', 'playing', 'color-group']; }
+  constructor() { super(); this.attachShadow({mode:'open'}); }
+  connectedCallback() { this.render(); this.shadowRoot.querySelector('.pad').addEventListener('click', () => {
+    this.toggleAttribute('active');
+    this.dispatchEvent(new CustomEvent('toggle', {detail:{active:this.hasAttribute('active')}, bubbles:true, composed:true}));
+  }); }
+  attributeChangedCallback() {
+    const pad = this.shadowRoot?.querySelector('.pad');
+    if(!pad) return;
+    pad.classList.toggle('active', this.hasAttribute('active'));
+    pad.classList.toggle('playing', this.hasAttribute('playing'));
+    pad.classList.toggle('group-b', this.getAttribute('color-group') === 'B');
+  }
+  render() {
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host { display: inline-block; }
+        .pad { width: 22px; height: 22px; border-radius: 3px; cursor: pointer; transition: all 0.05s; box-shadow: inset 0 1px 3px rgba(0,0,0,0.6); background: #14141f; border: 1px solid #252538; }
+        .pad.group-b { background: #1c1c2b; border-color: #2d2d42; }
+        .pad.active { background: var(--neon-green) !important; border-color: var(--neon-green); box-shadow: 0 0 8px var(--neon-green), inset 0 0 4px #fff; }
+        .pad.group-b.active { background: var(--neon-orange) !important; border-color: var(--neon-orange); box-shadow: 0 0 8px var(--neon-orange), inset 0 0 4px #fff; }
+        .pad.playing { outline: 1.5px solid var(--neon-cyan); outline-offset: 1px; z-index: 5; transform: scale(1.05); }
+      </style>
+      <div class="pad"></div>`;
+    this.attributeChangedCallback();
+  }
+}
+customElements.define('x-pad', XPad);
+
+class XNoteSelector extends HTMLElement {
+  constructor() { 
+    super(); this.attachShadow({mode:'open'});
+    this.notes = [{l:'OFF',f:0},{l:'C2',f:65.41},{l:'D2',f:73.42},{l:'E2',f:82.41},{l:'G2',f:98.00},{l:'A2',f:110.00}];
+    this.idx = 0;
+  }
+  connectedCallback() {
+    const freq = parseFloat(this.dataset.freq) || 0;
+    this.idx = this.notes.findIndex(n => Math.abs(n.f - freq) < 0.1);
+    if(this.idx === -1) this.idx = 0;
+    this.render();
+    this.shadowRoot.querySelector('.cell').addEventListener('click', () => {
+      this.idx = (this.idx + 1) % this.notes.length;
+      this._updateVisuals();
+      this.dispatchEvent(new CustomEvent('note-change', {detail:{freq:this.notes[this.idx].f}, bubbles:true, composed:true}));
+    });
+  }
+  attributeChangedCallback() { this.shadowRoot?.querySelector('.cell')?.classList.toggle('playing', this.hasAttribute('playing')); }
+  _updateVisuals() {
+    const cell = this.shadowRoot.querySelector('.cell');
+    cell.textContent = this.notes[this.idx].l;
+    cell.classList.toggle('active', this.idx > 0);
+  }
+  render() {
+    this.shadowRoot.innerHTML = `
+      <style>
+        .cell { width: 22px; height: 22px; background: #14141f; border: 1px solid #252538; border-radius: 3px; color: var(--text-dim); font-size: 9px; font-weight: bold; display: flex; align-items: center; justify-content: center; cursor: pointer; user-select: none; font-family: var(--font-mono); }
+        .cell.active { background: var(--neon-cyan) !important; color: #000; box-shadow: 0 0 8px var(--neon-cyan); border-color: var(--neon-cyan); }
+        .cell.playing { outline: 1.5px solid var(--neon-magenta); outline-offset: 1px; z-index: 5; transform: scale(1.05); }
+      </style>
+      <div class="cell">OFF</div>`;
+    this._updateVisuals();
+  }
+}
+customElements.define('x-note-selector', XNoteSelector);
+
+class XTimelineCell extends HTMLElement {
+  static get observedAttributes() { return ['active', 'playing']; }
+  constructor() { super(); this.attachShadow({mode:'open'}); }
+  connectedCallback() { this.render(); this.shadowRoot.querySelector('.cell').addEventListener('click', () => {
+    this.toggleAttribute('active');
+    this.dispatchEvent(new CustomEvent('timeline-toggle', {detail:{active:this.hasAttribute('active')}, bubbles:true, composed:true}));
+  }); }
+  attributeChangedCallback() {
+    const cell = this.shadowRoot?.querySelector('.cell');
+    if(!cell) return;
+    cell.classList.toggle('active', this.hasAttribute('active'));
+    cell.classList.toggle('playing', this.hasAttribute('playing'));
+  }
+  render() {
+    this.shadowRoot.innerHTML = `
+      <style>
+        .cell { width: 30px; height: 20px; background: #12121a; border: 1px solid #252538; cursor: pointer; transition: all 0.1s; box-shadow: inset 0 1px 3px rgba(0,0,0,0.6); }
+        .cell.active { background: var(--neon-magenta) !important; border-color: var(--neon-magenta); box-shadow: 0 0 8px rgba(255,0,85,0.7), inset 0 0 4px #fff; }
+        .cell.playing { outline: 1.5px solid var(--neon-cyan); outline-offset: 1px; z-index: 5; }
+      </style>
+      <div class="cell"></div>`;
+    this.attributeChangedCallback();
+  }
+}
+customElements.define('x-timeline-cell', XTimelineCell);
+
+class XChannelStrip extends HTMLElement {
+  constructor() { super(); this.attachShadow({mode:'open'}); }
+  connectedCallback() { this.render(); this._setupEvents(); }
+  _setupEvents() {
+    const trackId = this.getAttribute('track-id');
+    this.shadowRoot.querySelector('x-led-button').addEventListener('change', (e) => this._emit('mute', e.detail.active ? 1 : 0, trackId));
+    this.shadowRoot.addEventListener('input', (e) => { if(e.target.tagName === 'X-KNOB') this._emit(e.target.dataset.param, e.target.value, trackId); });
+    this.shadowRoot.querySelector('.edit-btn').addEventListener('click', () => {
+      this.dispatchEvent(new CustomEvent('open-settings', {detail:{trackId, label:this.getAttribute('label')}, bubbles:true, composed:true}));
+    });
+  }
+  _emit(param, value, trackId) {
+    this.dispatchEvent(new CustomEvent('channel-change', {detail:{trackId, param, value:parseFloat(value)}, bubbles:true, composed:true}));
+  }
+  render() {
+    const label = this.getAttribute('label') || 'Track';
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host { display: flex; align-items: center; background: #0d0d14; padding: 4px 8px; border-radius: 4px; border: 1px solid #1a1a26; gap: 6px; }
+        .track-name { width: 50px; font-size: 9px; font-weight: 900; color: var(--neon-cyan); text-transform: uppercase; letter-spacing: 0.5px; text-shadow: 0 0 4px rgba(0,243,255,0.3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .controls { display: flex; align-items: center; gap: 4px; }
+        .edit-btn { background: none; border: 1px solid #333; color: var(--text-dim); cursor: pointer; font-size: 10px; border-radius: 3px; padding: 2px 4px; margin-left: 4px; }
+        .edit-btn:hover { color: var(--neon-cyan); border-color: var(--neon-cyan); }
+      </style>
+      <div class="track-name">${label}</div>
+      <div class="controls">
+        <x-led-button label="MUTE"></x-led-button>
+        <x-knob data-param="gain" min="0" max="100" value="80" label="VOL"></x-knob>
+        <x-knob data-param="pan" min="-100" max="100" value="0" label="PAN"></x-knob>
+      </div>
+      <button class="edit-btn" title="Synth Settings">⚙</button>`;
+  }
+}
+customElements.define('x-channel-strip', XChannelStrip);
+
+class XFxPanel extends HTMLElement {
+  constructor() { super(); this.attachShadow({mode:'open'}); }
+  connectedCallback() { this.render(); this.shadowRoot.addEventListener('input', (e) => {
+    if(e.target.tagName === 'X-KNOB') this.dispatchEvent(new CustomEvent('fx-change', {detail:{param:e.target.id, value:e.target.value}, bubbles:true, composed:true}));
+  }); }
+  render() {
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host { display: block; background: #0a0a0f; padding: 10px; border-radius: 6px; border: 1px solid #1a1a26; }
+        .title { font-size: 9px; color: var(--neon-magenta); font-weight: bold; text-transform: uppercase; margin-bottom: 8px; letter-spacing: 1px; text-shadow: 0 0 4px rgba(255,0,85,0.4); }
+        .knobs { display: flex; gap: 12px; }
+      </style>
+      <div class="title">Master Delay FX</div>
+      <div class="knobs">
+        <x-knob id="time" min="50" max="1000" value="300" label="Time"></x-knob>
+        <x-knob id="feedback" min="0" max="90" value="40" label="Fdbk"></x-knob>
+        <x-knob id="mix" min="0" max="100" value="20" label="Mix"></x-knob>
+      </div>`;
+  }
+}
+customElements.define('x-fx-panel', XFxPanel);
+
+class XMasterBar extends HTMLElement {
+  constructor() { super(); this.attachShadow({mode:'open'}); this.analyser=null; this.dataArray=null; }
+  connectedCallback() { this.render(); this._setupEvents(); }
+  setAnalyser(analyser) {
+    this.analyser = analyser; this.analyser.fftSize = 32;
+    this.dataArray = new Uint8Array(this.analyser.frequencyBinCount);
+    this._drawMeter();
+  }
+  updateDisplay(step) {
+    const d = this.shadowRoot.querySelector('#step-display');
+    if(d) d.textContent = `STEP:${String(step + 1).padStart(2, '0')}`;
+  }
+  _setupEvents() {
+    const r = this.shadowRoot;
+    r.querySelector('#start').addEventListener('click', () => this.dispatchEvent(new CustomEvent('transport', {detail:'start', bubbles:true, composed:true})));
+    r.querySelector('#stop').addEventListener('click', () => this.dispatchEvent(new CustomEvent('transport', {detail:'stop', bubbles:true, composed:true})));
+    r.querySelector('#bpm-knob').addEventListener('input', (e) => this.dispatchEvent(new CustomEvent('bpm-change', {detail:e.target.value, bubbles:true, composed:true})));
+    r.querySelector('#metro').addEventListener('change', (e) => this.dispatchEvent(new CustomEvent('metro-toggle', {detail:e.detail.active, bubbles:true, composed:true})));
+  }
+  _drawMeter() {
+    if(!this.analyser) return;
+    this.analyser.getByteFrequencyData(this.dataArray);
+    let total = 0; for(let i=0; i<this.dataArray.length; i++) total += this.dataArray[i];
+    const avg = total / this.dataArray.length;
+    const canvas = this.shadowRoot.querySelector('#vu');
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.fillStyle = '#050508'; ctx.fillRect(0,0,canvas.width,canvas.height);
+    const w = (avg / 255) * canvas.width * 1.5;
+    const grad = ctx.createLinearGradient(0,0,canvas.width,0);
+    grad.addColorStop(0, '#00f3ff'); grad.addColorStop(0.7, '#ffcc00'); grad.addColorStop(1, '#ff0055');
+    ctx.fillStyle = grad; ctx.fillRect(0,0,Math.min(w,canvas.width),canvas.height);
+    requestAnimationFrame(() => this._drawMeter());
+  }
+  render() {
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host { display: block; background: #0c0c14; padding: 10px 16px; border-radius: 6px; border: 1px solid #1a1a26; }
+        .container { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+        .section { display: flex; align-items: center; gap: 12px; }
+        button { background: #1a1a26; color: var(--text-light); border: 1px solid var(--border-color); padding: 6px 12px; font-size: 10px; font-weight: bold; cursor: pointer; border-radius: 3px; font-family: var(--font-mono); }
+        #start { color: var(--neon-green); border-color: rgba(57,255,20,0.4); }
+        #stop { color: var(--neon-magenta); border-color: rgba(255,0,85,0.4); }
+        .lcd { background: #030305; border: 1px solid #222; padding: 4px 8px; border-radius: 3px; color: var(--neon-cyan); font-size: 12px; font-weight: bold; text-shadow: 0 0 6px rgba(0,243,255,0.8); min-width: 60px; text-align: center; box-shadow: inset 0 2px 4px rgba(0,0,0,0.9); }
+        canvas { width: 80px; height: 12px; border-radius: 2px; background: #050508; border: 1px solid #222; }
+        .meter-label { font-size: 8px; color: var(--text-dim); text-transform: uppercase; font-weight: bold; margin-bottom: 2px; }
+      </style>
+      <div class="container">
+        <div class="section">
+          <button id="start">▶ PLAY</button>
+          <button id="stop">■ STOP</button>
+          <div class="lcd" id="step-display">STEP:01</div>
+        </div>
+        <div class="section">
+          <x-knob id="bpm-knob" min="60" max="180" value="120" label="BPM"></x-knob>
+          <x-led-button id="metro" label="METRO"></x-led-button>
+        </div>
+        <div class="section">
+          <div>
+            <div class="meter-label">Master LR</div>
+            <canvas id="vu" width="80" height="12"></canvas>
+          </div>
+        </div>
+      </div>`;
+  }
+}
+customElements.define('x-master-bar', XMasterBar);
+
+class XTimeline extends HTMLElement {
+  constructor() { super(); this.attachShadow({mode:'open'}); }
+  connectedCallback() { this.render(); }
+  renderTimelineRows(tracks) {
+    const grid = this.shadowRoot.querySelector('.timeline-grid');
+    if(!grid) return;
+    grid.innerHTML = tracks.map(t => {
+      const cells = Array(8).fill(null).map((_, i) => `<x-timeline-cell data-track-id="${t.id}" data-bar="${i}" ${t.timeline[i]?'active':''}></x-timeline-cell>`).join('');
+      return `<div class="timeline-row"><div class="track-info">${t.label}</div><div class="cells-wrapper">${cells}</div></div>`;
+    }).join('');
+  }
+  setPlayingBar(bar) {
+    this.shadowRoot.querySelectorAll('x-timeline-cell').forEach(c => c.removeAttribute('playing'));
+    this.shadowRoot.querySelectorAll(`[data-bar="${bar}"]`).forEach(c => c.setAttribute('playing', ''));
+  }
+  render() {
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host { display: block; background: #08080c; border: 1px solid #1a1a26; border-radius: 6px; padding: 10px; width: fit-content; }
+        .header { display: flex; align-items: center; margin-bottom: 6px; border-bottom: 1px solid #222; padding-bottom: 4px; }
+        .title { font-size: 9px; color: var(--neon-magenta); font-weight: bold; letter-spacing: 1px; text-transform: uppercase; }
+        .bars-header { display: flex; margin-left: 60px; gap: 4px; margin-bottom: 4px; }
+        .bar-num { width: 30px; text-align: center; font-size: 8px; color: var(--text-dim); font-weight: bold; }
+        .timeline-grid { display: flex; flex-direction: column; gap: 4px; }
+        .timeline-row { display: flex; align-items: center; gap: 6px; }
+        .track-info { width: 50px; font-size: 8px; color: var(--text-light); font-weight: bold; text-transform: uppercase; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .cells-wrapper { display: flex; gap: 4px; }
+      </style>
+      <div class="header"><div class="title">Song Playlist / Timeline</div></div>
+      <div class="bars-header">${Array(8).fill(null).map((_,i)=>`<div class="bar-num">${String(i+1).padStart(2,'0')}</div>`).join('')}</div>
+      <div class="timeline-grid"></div>`;
+  }
+}
+customElements.define('x-timeline', XTimeline);
+
+class XStoragePanel extends HTMLElement {
+  constructor() { super(); this.attachShadow({mode:'open'}); }
+  connectedCallback() {
+    this.render();
+    this.shadowRoot.querySelector('#save').addEventListener('click', () => this.dispatchEvent(new CustomEvent('storage', {detail:'save', bubbles:true, composed:true})));
+    this.shadowRoot.querySelector('#load').addEventListener('click', () => this.dispatchEvent(new CustomEvent('storage', {detail:'load', bubbles:true, composed:true})));
+  }
+  render() {
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host { display: inline-block; }
+        .panel { display: flex; gap: 6px; }
+        button { background: #14141f; border: 1px solid var(--border-color); padding: 4px 10px; font-size: 9px; font-weight: bold; cursor: pointer; border-radius: 3px; font-family: var(--font-mono); }
+        #save { color: var(--neon-cyan); border-color: rgba(0,243,255,0.4); }
+        #load { color: var(--neon-orange); border-color: rgba(255,153,0,0.4); }
+      </style>
+      <div class="panel">
+        <button id="save">💾 SAVE</button>
+        <button id="load">📂 LOAD</button>
+      </div>`;
+  }
+}
+customElements.define('x-storage-panel', XStoragePanel);
+
+class XRecorderButton extends HTMLElement {
+  constructor() { super(); this.attachShadow({mode:'open'}); this.isRec = false; }
+  connectedCallback() {
+    this.render();
+    this.shadowRoot.querySelector('#rec').addEventListener('click', () => {
+      this.isRec = !this.isRec; this._updateVisuals();
+      this.dispatchEvent(new CustomEvent('rec-toggle', {detail:this.isRec, bubbles:true, composed:true}));
+    });
+  }
+  _updateVisuals() {
+    const btn = this.shadowRoot.querySelector('#rec');
+    if(this.isRec) { btn.textContent = '🛑 STOP REC'; btn.classList.add('recording'); }
+    else { btn.textContent = '🔴 EXPORT'; btn.classList.remove('recording'); }
+  }
+  render() {
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host { display: inline-block; }
+        button { background: #14141f; color: var(--neon-magenta); border: 1px solid rgba(255,0,85,0.4); padding: 4px 10px; font-size: 9px; font-weight: bold; cursor: pointer; border-radius: 3px; font-family: var(--font-mono); }
+        button.recording { background: var(--neon-magenta); color: #fff; box-shadow: 0 0 10px var(--neon-magenta); animation: pulse 1s infinite; }
+        @keyframes pulse { 50% { opacity: 0.6; } }
+      </style>
+      <button id="rec">🔴 EXPORT</button>`;
+  }
+}
+customElements.define('x-recorder-button', XRecorderButton);
+
+class XAddTrackBar extends HTMLElement {
+  constructor() { super(); this.attachShadow({mode:'open'}); }
+  connectedCallback() {
+    this.render();
+    this.shadowRoot.querySelector('#add').addEventListener('click', () => {
+      const type = this.shadowRoot.querySelector('#type').value;
+      this.dispatchEvent(new CustomEvent('add-track', {detail:{type}, bubbles:true, composed:true}));
+    });
+  }
+  render() {
+    this.shadowRoot.innerHTML = `
+      <style>
+        .bar { display: flex; gap: 6px; align-items: center; }
+        select { background: #14141f; color: var(--neon-cyan); border: 1px solid var(--border-color); padding: 3px; font-family: var(--font-mono); border-radius: 3px; outline: none; font-size: 9px; }
+        button { background: var(--neon-magenta); color: #fff; border: none; padding: 3px 10px; font-weight: bold; cursor: pointer; border-radius: 3px; font-family: var(--font-mono); font-size: 9px; box-shadow: 0 0 8px rgba(255,0,85,0.4); }
+      </style>
+      <div class="bar">
+        <select id="type">
+          <option value="kick">🥁 KICK</option>
+          <option value="snare">🥁 SNARE</option>
+          <option value="bass">🎸 303 BASS</option>
+        </select>
+        <button id="add">+ ADD TRACK</button>
+      </div>`;
+  }
+}
+customElements.define('x-add-track-bar', XAddTrackBar);
+
+class XModalSynth extends HTMLElement {
+  constructor() { super(); this.attachShadow({mode:'open'}); this.targetId = null; }
+  connectedCallback() { this.render(); this._setupEvents(); }
+  open(trackId, label) {
+    this.targetId = trackId;
+    this.shadowRoot.querySelector('.title').textContent = `EDIT: ${label.toUpperCase()}`;
+    this.shadowRoot.querySelector('dialog').showModal();
+  }
+  _setupEvents() {
+    const d = this.shadowRoot.querySelector('dialog');
+    this.shadowRoot.querySelector('#close').addEventListener('click', () => d.close());
+    this.shadowRoot.addEventListener('input', (e) => {
+      if(e.target.tagName === 'X-KNOB') this.dispatchEvent(new CustomEvent('synth-change', {detail:{trackId:this.targetId, param:e.target.dataset.param, value:e.target.value}, bubbles:true, composed:true}));
+    });
+  }
+  render() {
+    this.shadowRoot.innerHTML = `
+      <style>
+        dialog { background: transparent; border: none; padding: 0; outline: none; }
+        dialog::backdrop { background: rgba(3,3,5,0.85); backdrop-filter: blur(4px); }
+        .body { background: #0a0a0f; padding: 16px; width: 220px; border: 1px solid var(--border-color); border-radius: 6px; position: relative; }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1px dashed #333; padding-bottom: 6px; }
+        .title { font-size: 10px; color: var(--neon-cyan); font-weight: bold; text-shadow: 0 0 4px rgba(0,243,255,0.5); }
+        #close { background: none; border: none; color: var(--neon-magenta); cursor: pointer; font-weight: bold; font-size: 14px; }
+        .knobs { display: flex; justify-content: space-around; }
+      </style>
+      <dialog>
+        <div class="body">
+          <div class="header">
+            <div class="title">EDIT SYNTH</div>
+            <button id="close">✕</button>
+          </div>
+          <div class="knobs">
+            <x-knob data-param="decay" min="50" max="1000" value="300" label="Decay"></x-knob>
+          </div>
+        </div>
+      </dialog>`;
+  }
+}
+customElements.define('x-modal-synth', XModalSynth);
+
+class XRgbPanel extends HTMLElement {
+  constructor() { super(); this.attachShadow({mode:'open'}); }
+  connectedCallback() {
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host { display: block; position: relative; border-radius: 8px; }
+        .glow { position: absolute; top: -2px; left: -2px; right: -2px; bottom: -2px; z-index: 1; border-radius: 10px; background: linear-gradient(45deg, #ff0055, #00f3ff, #39ff14, #ff9900, #ff0055); background-size: 400%; animation: rgb 10s linear infinite; filter: blur(12px); opacity: 0.5; pointer-events: none; }
+        .border { position: absolute; top: -1px; left: -1px; right: -1px; bottom: -1px; z-index: 2; border-radius: 9px; background: linear-gradient(45deg, #ff0055, #00f3ff, #39ff14, #ff9900, #ff0055); background-size: 400%; animation: rgb 10s linear infinite; opacity: 0.8; pointer-events: none; }
+        .content { position: relative; z-index: 3; background: var(--bg-panel); border-radius: 8px; overflow: hidden; height: 100%; width: 100%; padding: 12px; box-sizing: border-box; }
+        @keyframes rgb { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
+      </style>
+      <div class="glow"></div>
+      <div class="border"></div>
+      <div class="content"><slot></slot></div>`;
+  }
+}
+customElements.define('x-rgb-panel', XRgbPanel);
+
+// ==========================================
+// 3. MAIN ORCHESTRATOR
+// ==========================================
+class XSequencer extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({mode:'open'});
+    this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    this.masterAnalyser = this.ctx.createAnalyser();
+    this.delayEffect = new DelayEffect(this.ctx);
+    this.recordDest = this.ctx.createMediaStreamDestination();
+    
+    this.delayEffect.output.connect(this.masterAnalyser);
+    this.masterAnalyser.connect(this.ctx.destination);
+    this.masterAnalyser.connect(this.recordDest);
+
+    this.drumSynth = new DrumSynth(this.ctx);
+    this.bassSynth = new BassSynth(this.ctx);
+    this.scheduler = new SequencerScheduler(this.ctx, (step, time) => this._processStep(step, time));
+    
+    this.tracks = [];
+    this.isMetro = false;
+    this.mediaRecorder = null;
+    this.audioChunks = [];
+    this._setupRecorder();
+  }
+
+  connectedCallback() {
+    this.render();
+    this.shadowRoot.querySelector('x-master-bar').setAnalyser(this.masterAnalyser);
+    this._bindEvents();
+    
+    // Default tracks
+    this._addTrack('kick', 'Kick Drum');
+    this._addTrack('snare', 'Snare Hit');
+    this._addTrack('bass', 'Acid Bass');
+  }
+
+  _addTrack(type, label, matrix, timeline, params) {
+    const gain = this.ctx.createGain();
+    const pan = this.ctx.createStereoPanner();
+    gain.connect(pan); pan.connect(this.delayEffect.input);
+    
+    this.tracks.push({
+      id: 't_' + Date.now() + Math.random().toString(36).substr(2,4),
+      type, label, mute: false, gainNode: gain, pannerNode: pan,
+      matrix: matrix || Array(16).fill(type === 'bass' ? 0 : false),
+      timeline: timeline || Array(8).fill(true),
+      synthParams: params || { decay: type === 'bass' ? 180 : 300 }
+    });
+    this._refreshUI();
+  }
+
+  _refreshUI() {
+    const container = this.shadowRoot.querySelector('#tracks-container');
+    const timelineGrid = this.shadowRoot.querySelector('.timeline-grid');
+    
+    container.innerHTML = this.tracks.map(t => {
+      const isBass = t.type === 'bass';
+      const cells = Array(16).fill(null).map((_, i) => {
+        if(isBass) return `<x-note-selector data-track-id="${t.id}" data-step="${i}" data-freq="${t.matrix[i]}"></x-note-selector>`;
+        const grp = (i>=4 && i<=7) || (i>=12 && i<=15) ? 'B' : 'A';
+        return `<x-pad data-track-id="${t.id}" data-step="${i}" color-group="${grp}" ${t.matrix[i]?'active':''}></x-pad>`;
+      }).join('');
+      return `
+        <div class="track-row">
+          <x-channel-strip track-id="${t.id}" label="${t.label}"></x-channel-strip>
+          <div class="pads-container">${cells}</div>
+        </div>`;
+    }).join('');
+
+    this.shadowRoot.querySelector('x-timeline').renderTimelineRows(this.tracks);
+  }
+
+  _bindEvents() {
+    const r = this.shadowRoot;
+    
+    r.querySelector('x-master-bar').addEventListener('transport', (e) => {
+      if(e.detail === 'start') { this.ctx.resume(); this.scheduler.start(); }
+      else this.scheduler.stop();
+    });
+    r.querySelector('x-master-bar').addEventListener('bpm-change', (e) => this.scheduler.bpm = parseFloat(e.detail));
+    r.querySelector('x-master-bar').addEventListener('metro-toggle', (e) => this.isMetro = e.detail);
+
+    r.querySelector('x-add-track-bar').addEventListener('add-track', (e) => {
+      const type = e.detail.type;
+      const count = this.tracks.filter(t => t.type === type).length + 1;
+      this._addTrack(type, `${type} ${count}`);
+    });
+
+    r.addEventListener('click', (e) => {
+      if(e.target.tagName === 'X-PAD') {
+        const t = this.tracks.find(x => x.id === e.target.dataset.trackId);
+        if(t) { const s = parseInt(e.target.dataset.step); t.matrix[s] = !t.matrix[s]; }
+      }
+      if(e.target.classList.contains('edit-btn')) {
+        // Handled by channel-strip open-settings event
+      }
+    });
+
+    r.addEventListener('note-change', (e) => {
+      if(e.target.tagName === 'X-NOTE-SELECTOR') {
+        const t = this.tracks.find(x => x.id === e.target.dataset.trackId);
+        if(t) t.matrix[parseInt(e.target.dataset.step)] = e.detail.freq;
+      }
+    });
+
+    r.addEventListener('timeline-toggle', (e) => {
+      if(e.target.tagName === 'X-TIMELINE-CELL') {
+        const t = this.tracks.find(x => x.id === e.target.dataset.trackId);
+        if(t) t.timeline[parseInt(e.target.dataset.bar)] = !t.timeline[parseInt(e.target.dataset.bar)];
+      }
+    });
+
+    r.addEventListener('channel-change', (e) => {
+      const t = this.tracks.find(x => x.id === e.detail.trackId);
+      if(!t) return;
+      const now = this.ctx.currentTime;
+      if(e.detail.param === 'gain') t.gainNode.gain.linearRampToValueAtTime(e.detail.value / 100, now + 0.05);
+      if(e.detail.param === 'pan') t.pannerNode.pan.linearRampToValueAtTime(e.detail.value / 100, now + 0.05);
+      if(e.detail.param === 'mute') t.mute = e.detail.value === 1;
+    });
+
+    r.addEventListener('open-settings', (e) => {
+      r.querySelector('x-modal-synth').open(e.detail.trackId, e.detail.label);
+    });
+
+    r.addEventListener('synth-change', (e) => {
+      const t = this.tracks.find(x => x.id === e.detail.trackId);
+      if(t) t.synthParams[e.detail.param] = parseFloat(e.detail.value);
+    });
+
+    r.querySelector('x-fx-panel').addEventListener('fx-change', (e) => this.delayEffect.setParam(e.detail.param, e.detail.value));
+
+    r.querySelector('x-storage-panel').addEventListener('storage', (e) => {
+      if(e.detail === 'save') {
+        localStorage.setItem('cyber_daw', JSON.stringify({tracks: this.tracks.map(t => ({type:t.type,label:t.label,matrix:t.matrix,timeline:t.timeline,synthParams:t.synthParams})), bpm: this.scheduler.bpm}));
+        alert('Pattern Saved to LocalStorage!');
+      } else {
+        const data = JSON.parse(localStorage.getItem('cyber_daw'));
+        if(!data) return alert('No saved data found.');
+        this.tracks = [];
+        data.tracks.forEach(t => this._addTrack(t.type, t.label, t.matrix, t.timeline, t.synthParams));
+        this.scheduler.bpm = data.bpm;
+        alert('Pattern Loaded!');
+      }
+    });
+
+    r.querySelector('x-recorder-button').addEventListener('rec-toggle', (e) => {
+      if(e.detail) { this.audioChunks = []; this.mediaRecorder.start(); this.ctx.resume(); this.scheduler.start(); }
+      else { this.mediaRecorder.stop(); this.scheduler.stop(); }
+    });
+  }
+
+  _processStep(globalStep, time) {
+    const totalBars = 8;
+    const currentBar = Math.floor(globalStep / 16) % totalBars;
+    const patternStep = globalStep % 16;
+
+    requestAnimationFrame(() => {
+      this.shadowRoot.querySelector('x-master-bar').updateDisplay(patternStep);
+      this.shadowRoot.querySelector('x-timeline').setPlayingBar(currentBar);
+      this.shadowRoot.querySelectorAll('x-pad, x-note-selector, x-timeline-cell').forEach(el => el.removeAttribute('playing'));
+      this.shadowRoot.querySelectorAll(`[data-step="${patternStep}"]`).forEach(el => el.setAttribute('playing', ''));
+    });
+
+    if(this.isMetro && patternStep % 4 === 0) {
+      const osc = this.ctx.createOscillator(); const gain = this.ctx.createGain();
+      osc.connect(gain); gain.connect(this.ctx.destination);
+      osc.frequency.setValueAtTime(patternStep === 0 ? 1000 : 600, time);
+      gain.gain.setValueAtTime(0.1, time); gain.gain.exponentialRampToValueAtTime(0.001, time + 0.05);
+      osc.start(time); osc.stop(time + 0.05);
+    }
+
+    this.tracks.forEach(t => {
+      if(t.mute || !t.timeline[currentBar]) return;
+      if(t.type === 'kick' && t.matrix[patternStep]) this.drumSynth.playKick(time, t.gainNode, t.synthParams);
+      else if(t.type === 'snare' && t.matrix[patternStep]) this.drumSynth.playSnare(time, t.gainNode, t.synthParams);
+      else if(t.type === 'bass' && t.matrix[patternStep] > 0) this.bassSynth.playNote(t.matrix[patternStep], time, t.gainNode, t.synthParams);
+    });
+  }
+
+  _setupRecorder() {
+    this.mediaRecorder = new MediaRecorder(this.recordDest.stream);
+    this.mediaRecorder.ondataavailable = (e) => { if(e.data.size > 0) this.audioChunks.push(e.data); };
+    this.mediaRecorder.onstop = () => {
+      const blob = new Blob(this.audioChunks, {type: 'audio/webm'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = `cyber-daw-${Date.now()}.webm`; a.click();
+      this.audioChunks = [];
+    };
+  }
+
+  render() {
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host { display: block; background: #06060a; padding: 20px; border-radius: 12px; width: fit-content; box-shadow: 0 20px 50px rgba(0,0,0,0.9); font-family: var(--font-mono); }
+        .main-grid { display: flex; flex-direction: column; gap: 16px; margin: 16px 0; }
+        .tracks-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 1px dashed #222; padding-bottom: 6px; }
+        .tracks-header span { font-size: 10px; color: var(--neon-cyan); font-weight: bold; letter-spacing: 1px; text-shadow: 0 0 4px rgba(0,243,255,0.4); }
+        #tracks-container { display: flex; flex-direction: column; gap: 8px; }
+        .track-row { display: flex; align-items: center; gap: 8px; }
+        .pads-container { display: flex; gap: 3px; background: #050508; padding: 4px; border-radius: 4px; border: 1px solid #14141f; }
+        .bottom-bar { display: flex; gap: 16px; justify-content: space-between; align-items: flex-start; }
+        .utils { display: flex; gap: 12px; align-items: center; }
+      </style>
+      
+      <x-rgb-panel><x-master-bar></x-master-bar></x-rgb-panel>
+      
+      <div class="main-grid">
+        <x-rgb-panel>
+          <div class="tracks-header">
+            <span>STEP SEQUENCER / PIANO ROLL</span>
+            <x-add-track-bar></x-add-track-bar>
+          </div>
+          <div id="tracks-container"></div>
+        </x-rgb-panel>
+        
+        <x-rgb-panel><x-timeline></x-timeline></x-rgb-panel>
+      </div>
+      
+      <div class="bottom-bar">
+        <x-rgb-panel><x-fx-panel></x-fx-panel></x-rgb-panel>
+        <x-rgb-panel>
+          <div class="utils">
+            <x-storage-panel></x-storage-panel>
+            <x-recorder-button></x-recorder-button>
+          </div>
+        </x-rgb-panel>
+      </div>
+      
+      <x-modal-synth></x-modal-synth>
+    `;
+  }
+}
+customElements.define('x-sequencer', XSequencer);
+
+</script>
+</body>
+</html>
