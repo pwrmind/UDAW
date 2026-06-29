@@ -2,8 +2,8 @@
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CYBER-DAW // Web Component Studio</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>CYBER-DAW</title>
 <style>
   :root {
     --bg-main: #030305;
@@ -25,6 +25,9 @@
     min-height: 100vh; margin: 0;
     font-family: var(--font-mono); color: #fff;
     overflow-x: hidden;
+  }
+  @media (max-width: 800px) {
+    body { padding: 10px; }
   }
 </style>
 </head>
@@ -170,7 +173,7 @@ class SequencerScheduler {
 }
 
 // ==========================================
-// 2. UI COMPONENTS (добавлена кнопка удаления)
+// 2. UI COMPONENTS
 // ==========================================
 class XKnob extends HTMLElement {
   static get observedAttributes() { return ['min', 'max', 'value', 'label']; }
@@ -185,6 +188,7 @@ class XKnob extends HTMLElement {
   }
   _setupEvents() {
     const knob = this.shadowRoot.querySelector('.knob-circle');
+    if (!knob) return;
     const onMove = (e) => {
       const deltaY = this.startY - e.clientY;
       const range = this.max - this.min;
@@ -198,13 +202,31 @@ class XKnob extends HTMLElement {
       e.preventDefault(); this.startY = e.clientY; this.startVal = this.value;
       document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp);
     });
+    // touch support
+    knob.addEventListener('touchstart', (e) => {
+      e.preventDefault(); this.startY = e.touches[0].clientY; this.startVal = this.value;
+      const onTouchMove = (ev) => {
+        const deltaY = this.startY - ev.touches[0].clientY;
+        const range = this.max - this.min;
+        let newVal = this.startVal + (deltaY / 150) * range;
+        this.value = Math.max(this.min, Math.min(this.max, newVal));
+        this._updateVisuals();
+        this.dispatchEvent(new Event('input', {bubbles:true}));
+      };
+      const onTouchEnd = () => { document.removeEventListener('touchmove', onTouchMove); document.removeEventListener('touchend', onTouchEnd); };
+      document.addEventListener('touchmove', onTouchMove, {passive: false});
+      document.addEventListener('touchend', onTouchEnd);
+    });
   }
   _updateVisuals() {
     if(!this.shadowRoot) return;
+    const pointer = this.shadowRoot.querySelector('.pointer');
+    const valEl = this.shadowRoot.querySelector('.val');
+    if(!pointer || !valEl) return;
     const percent = (this.value - this.min) / (this.max - this.min);
     const deg = -135 + percent * 270;
-    this.shadowRoot.querySelector('.pointer').style.transform = `rotate(${deg}deg)`;
-    this.shadowRoot.querySelector('.val').textContent = Math.round(this.value);
+    pointer.style.transform = `rotate(${deg}deg)`;
+    valEl.textContent = Math.round(this.value);
   }
   render() {
     this.shadowRoot.innerHTML = `
@@ -302,6 +324,7 @@ class XNoteSelector extends HTMLElement {
   attributeChangedCallback() { this.shadowRoot?.querySelector('.cell')?.classList.toggle('playing', this.hasAttribute('playing')); }
   _updateVisuals() {
     const cell = this.shadowRoot.querySelector('.cell');
+    if (!cell) return;
     cell.textContent = this.notes[this.idx].l;
     cell.classList.toggle('active', this.idx > 0);
   }
@@ -365,7 +388,7 @@ class XChannelStrip extends HTMLElement {
     const label = this.getAttribute('label') || 'Track';
     this.shadowRoot.innerHTML = `
       <style>
-        :host { display: flex; align-items: center; background: #0d0d14; padding: 4px 8px; border-radius: 4px; border: 1px solid #1a1a26; gap: 6px; }
+        :host { display: flex; align-items: center; background: #0d0d14; padding: 4px 8px; border-radius: 4px; border: 1px solid #1a1a26; gap: 6px; flex-wrap: wrap; }
         .track-name { width: 50px; font-size: 9px; font-weight: 900; color: var(--neon-cyan); text-transform: uppercase; letter-spacing: 0.5px; text-shadow: 0 0 4px rgba(0,243,255,0.3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .controls { display: flex; align-items: center; gap: 4px; }
         .edit-btn, .del-btn { background: none; border: 1px solid #333; color: var(--text-dim); cursor: pointer; font-size: 10px; border-radius: 3px; padding: 2px 4px; margin-left: 4px; }
@@ -406,6 +429,96 @@ class XFxPanel extends HTMLElement {
 }
 customElements.define('x-fx-panel', XFxPanel);
 
+// Темпо-контрол с TAP
+class XTempoControl extends HTMLElement {
+  static get observedAttributes() { return ['value']; }
+  constructor() {
+    super();
+    this.attachShadow({ mode: 'open' });
+    this.bpm = 120;
+    this.minBpm = 60;
+    this.maxBpm = 200;
+    this.tapTimes = [];
+  }
+  connectedCallback() {
+    this.bpm = parseInt(this.getAttribute('value')) || 120;
+    this.render();
+    this.setupEvents();
+  }
+  attributeChangedCallback(name, oldValue, newValue) {
+    if (name === 'value' && oldValue !== newValue) {
+      this.bpm = Math.max(this.minBpm, Math.min(this.maxBpm, parseInt(newValue) || 120));
+      this.updateDisplay();
+    }
+  }
+  setupEvents() {
+    const root = this.shadowRoot;
+    root.querySelector('#bpm-up').addEventListener('click', () => this.changeBpm(1));
+    root.querySelector('#bpm-down').addEventListener('click', () => this.changeBpm(-1));
+    root.querySelector('#bpm-tap').addEventListener('click', () => {
+      const now = performance.now();
+      if (this.tapTimes.length > 0 && now - this.tapTimes[this.tapTimes.length - 1] > 2000) {
+        this.tapTimes = [];
+      }
+      this.tapTimes.push(now);
+      if (this.tapTimes.length >= 2) {
+        let totalDeltas = 0;
+        for (let i = 1; i < this.tapTimes.length; i++) {
+          totalDeltas += (this.tapTimes[i] - this.tapTimes[i - 1]);
+        }
+        const averageDelta = totalDeltas / (this.tapTimes.length - 1);
+        const calculatedBpm = Math.round(60000 / averageDelta);
+        if (calculatedBpm >= this.minBpm && calculatedBpm <= this.maxBpm) {
+          this.bpm = calculatedBpm;
+          this.updateDisplay();
+          this.emitBpmChange();
+        }
+      }
+      if (this.tapTimes.length > 4) this.tapTimes.shift();
+    });
+  }
+  changeBpm(amount) {
+    const newBpm = this.bpm + amount;
+    if (newBpm >= this.minBpm && newBpm <= this.maxBpm) {
+      this.bpm = newBpm;
+      this.updateDisplay();
+      this.emitBpmChange();
+    }
+  }
+  updateDisplay() {
+    const display = this.shadowRoot.querySelector('.lcd-value');
+    if (display) display.textContent = String(this.bpm).padStart(3, '0');
+  }
+  emitBpmChange() {
+    this.dispatchEvent(new CustomEvent('bpm-change', {
+      detail: { bpm: this.bpm },
+      bubbles: true, composed: true
+    }));
+  }
+  render() {
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host { display: inline-block; font-family: 'Courier New', monospace; user-select: none; }
+        .tempo-box { display: flex; align-items: center; background: #0d0d14; border: 1px solid #222233; padding: 4px 8px; border-radius: 6px; gap: 8px; }
+        .lcd-screen { background: #030305; border: 1px solid #1a1a26; padding: 4px 8px; border-radius: 4px; display: flex; flex-direction: column; align-items: center; min-width: 50px; box-shadow: inset 0 2px 6px rgba(0,0,0,0.9); }
+        .lcd-label { font-size: 7px; color: #555577; text-transform: uppercase; font-weight: bold; letter-spacing: 0.5px; }
+        .lcd-value { font-size: 14px; color: #39ff14; font-weight: 900; text-shadow: 0 0 6px rgba(57,255,20,0.6); }
+        .btn { background: #14141f; border: 1px solid #33334d; color: #8888aa; font-size: 10px; font-weight: bold; padding: 4px 8px; cursor: pointer; border-radius: 4px; transition: all 0.1s; }
+        .btn:active { background: #222233; color: #00f3ff; border-color: #00f3ff; box-shadow: 0 0 8px rgba(0,243,255,0.4); }
+        #bpm-tap { color: #ff0055; border-color: rgba(255,0,85,0.3); }
+        #bpm-tap:active { color: #fff; background: #ff0055; border-color: #ff0055; box-shadow: 0 0 10px #ff0055; }
+      </style>
+      <div class="tempo-box">
+        <button class="btn" id="bpm-down">▼</button>
+        <div class="lcd-screen"><span class="lcd-label">BPM</span><span class="lcd-value">${String(this.bpm).padStart(3, '0')}</span></div>
+        <button class="btn" id="bpm-up">▲</button>
+        <button class="btn" id="bpm-tap">TAP</button>
+      </div>`;
+  }
+}
+customElements.define('x-tempo-control', XTempoControl);
+
+// Мастер-панель с темпо-контролом
 class XMasterBar extends HTMLElement {
   constructor() { super(); this.attachShadow({mode:'open'}); this.analyser=null; this.dataArray=null; }
   connectedCallback() { this.render(); this._setupEvents(); }
@@ -422,8 +535,8 @@ class XMasterBar extends HTMLElement {
     const r = this.shadowRoot;
     r.querySelector('#start').addEventListener('click', () => this.dispatchEvent(new CustomEvent('transport', {detail:'start', bubbles:true, composed:true})));
     r.querySelector('#stop').addEventListener('click', () => this.dispatchEvent(new CustomEvent('transport', {detail:'stop', bubbles:true, composed:true})));
-    r.querySelector('#bpm-knob').addEventListener('input', (e) => this.dispatchEvent(new CustomEvent('bpm-change', {detail:e.target.value, bubbles:true, composed:true})));
     r.querySelector('#metro').addEventListener('change', (e) => this.dispatchEvent(new CustomEvent('metro-toggle', {detail:e.detail.active, bubbles:true, composed:true})));
+    r.querySelector('#tempo').addEventListener('bpm-change', (e) => this.dispatchEvent(new CustomEvent('bpm-change', {detail: e.detail, bubbles: true, composed: true})));
   }
   _drawMeter() {
     if(!this.analyser) return;
@@ -444,7 +557,7 @@ class XMasterBar extends HTMLElement {
     this.shadowRoot.innerHTML = `
       <style>
         :host { display: block; background: #0c0c14; padding: 10px 16px; border-radius: 6px; border: 1px solid #1a1a26; }
-        .container { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+        .container { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
         .section { display: flex; align-items: center; gap: 12px; }
         button { background: #1a1a26; color: var(--text-light); border: 1px solid var(--border-color); padding: 6px 12px; font-size: 10px; font-weight: bold; cursor: pointer; border-radius: 3px; font-family: var(--font-mono); }
         #start { color: var(--neon-green); border-color: rgba(57,255,20,0.4); }
@@ -460,7 +573,7 @@ class XMasterBar extends HTMLElement {
           <div class="lcd" id="step-display">STEP:01</div>
         </div>
         <div class="section">
-          <x-knob id="bpm-knob" min="60" max="180" value="120" label="BPM"></x-knob>
+          <x-tempo-control id="tempo" value="120"></x-tempo-control>
           <x-led-button id="metro" label="METRO"></x-led-button>
         </div>
         <div class="section">
@@ -474,6 +587,7 @@ class XMasterBar extends HTMLElement {
 }
 customElements.define('x-master-bar', XMasterBar);
 
+// Временная линейка
 class XTimeline extends HTMLElement {
   constructor() { super(); this.attachShadow({mode:'open'}); }
   connectedCallback() { this.render(); }
@@ -619,10 +733,7 @@ class XModalSynth extends HTMLElement {
       </style>
       <dialog>
         <div class="body">
-          <div class="header">
-            <div class="title">EDIT SYNTH</div>
-            <button id="close">✕</button>
-          </div>
+          <div class="header"><div class="title">EDIT SYNTH</div><button id="close">✕</button></div>
           <div class="knobs">
             <x-knob data-param="decay" min="50" max="1000" value="300" label="Decay"></x-knob>
             <x-knob data-param="envMod" min="0" max="100" value="50" label="Env.Mod"></x-knob>
@@ -682,8 +793,6 @@ class XSequencer extends HTMLElement {
     this.render();
     this.shadowRoot.querySelector('x-master-bar').setAnalyser(this.masterAnalyser);
     this._bindEvents();
-    
-    // Default tracks
     this._addTrack('kick', 'Kick');
     this._addTrack('snare', 'Snare');
     this._addTrack('bass', 'Bass');
@@ -693,7 +802,6 @@ class XSequencer extends HTMLElement {
     const gain = this.ctx.createGain();
     const pan = this.ctx.createStereoPanner();
     gain.connect(pan); pan.connect(this.delayEffect.input);
-    
     this.tracks.push({
       id: 't_' + Date.now() + Math.random().toString(36).substr(2,4),
       type, label, mute: false, gainNode: gain, pannerNode: pan,
@@ -707,7 +815,6 @@ class XSequencer extends HTMLElement {
   _removeTrack(trackId) {
     const idx = this.tracks.findIndex(t => t.id === trackId);
     if (idx === -1) return;
-    // Отключаем аудиоузлы
     const track = this.tracks[idx];
     track.gainNode.disconnect();
     track.pannerNode.disconnect();
@@ -741,7 +848,7 @@ class XSequencer extends HTMLElement {
       if(e.detail === 'start') { this.ctx.resume(); this.scheduler.start(); }
       else this.scheduler.stop();
     });
-    r.querySelector('x-master-bar').addEventListener('bpm-change', (e) => this.scheduler.bpm = parseFloat(e.detail));
+    r.querySelector('x-master-bar').addEventListener('bpm-change', (e) => this.scheduler.bpm = e.detail.bpm);
     r.querySelector('x-master-bar').addEventListener('metro-toggle', (e) => this.isMetro = e.detail);
 
     r.querySelector('x-add-track-bar').addEventListener('add-track', (e) => {
@@ -750,9 +857,7 @@ class XSequencer extends HTMLElement {
       this._addTrack(type, `${type} ${count}`);
     });
 
-    r.addEventListener('delete-track', (e) => {
-      this._removeTrack(e.detail.trackId);
-    });
+    r.addEventListener('delete-track', (e) => this._removeTrack(e.detail.trackId));
 
     r.addEventListener('toggle', (e) => {
       if(e.target.tagName === 'X-PAD') {
@@ -858,15 +963,33 @@ class XSequencer extends HTMLElement {
   render() {
     this.shadowRoot.innerHTML = `
       <style>
-        :host { display: block; background: #06060a; padding: 20px; border-radius: 12px; width: fit-content; box-shadow: 0 20px 50px rgba(0,0,0,0.9); font-family: var(--font-mono); }
+        :host {
+          display: block;
+          background: #06060a;
+          padding: 20px;
+          border-radius: 12px;
+          width: fit-content;
+          max-width: 100%;
+          box-shadow: 0 20px 50px rgba(0,0,0,0.9);
+          font-family: var(--font-mono);
+        }
         .main-grid { display: flex; flex-direction: column; gap: 16px; margin: 16px 0; }
-        .tracks-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 1px dashed #222; padding-bottom: 6px; }
+        .tracks-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 1px dashed #222; padding-bottom: 6px; flex-wrap: wrap; gap: 8px; }
         .tracks-header span { font-size: 10px; color: var(--neon-cyan); font-weight: bold; letter-spacing: 1px; text-shadow: 0 0 4px rgba(0,243,255,0.4); }
         #tracks-container { display: flex; flex-direction: column; gap: 8px; }
-        .track-row { display: flex; align-items: center; gap: 8px; }
-        .pads-container { display: flex; gap: 3px; background: #050508; padding: 4px; border-radius: 4px; border: 1px solid #14141f; }
-        .bottom-bar { display: flex; gap: 16px; justify-content: space-between; align-items: flex-start; }
-        .utils { display: flex; gap: 12px; align-items: center; }
+        .track-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .pads-container { display: flex; gap: 3px; background: #050508; padding: 4px; border-radius: 4px; border: 1px solid #14141f; flex-wrap: wrap; }
+        .bottom-bar { display: flex; gap: 16px; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; }
+        .utils { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+
+        @media (max-width: 700px) {
+          :host { padding: 10px; }
+          .main-grid { gap: 10px; }
+          .track-row { flex-direction: column; align-items: flex-start; gap: 4px; }
+          .pads-container { justify-content: flex-start; }
+          .bottom-bar { flex-direction: column; gap: 10px; }
+          .bottom-bar > * { width: 100%; }
+        }
       </style>
       
       <x-rgb-panel><x-master-bar></x-master-bar></x-rgb-panel>
@@ -898,7 +1021,6 @@ class XSequencer extends HTMLElement {
   }
 }
 customElements.define('x-sequencer', XSequencer);
-
 </script>
 </body>
 </html>
