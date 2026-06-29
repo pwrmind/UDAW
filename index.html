@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>CYBER-DAW // 9 Instruments — Full</title>
+<title>CYBER-DAW // Step Sequencer with Pattern Length</title>
 <style>
   :root {
     --bg-main: #030305;
@@ -201,6 +201,7 @@ class DelayEffect {
 class SequencerScheduler {
   constructor(ctx, cb) {
     this.ctx = ctx; this.cb = cb; this.bpm = 120; this.on = false; this.t = 0; this.step = 0;
+    this.maxSteps = 16; // по умолчанию 16 шагов
   }
   start() { if (this.on) return; this.on = true; this.step = 0; this.t = this.ctx.currentTime; this._loop(); }
   stop() { this.on = false; clearTimeout(this.timer); }
@@ -208,7 +209,10 @@ class SequencerScheduler {
     while (this.t < this.ctx.currentTime + 0.1) { this.cb(this.step, this.t); this._next(); }
     this.timer = setTimeout(() => this._loop(), 25);
   }
-  _next() { this.t += 0.25 * (60/this.bpm); this.step++; }
+  _next() {
+    this.t += 0.25 * (60/this.bpm);
+    this.step = (this.step + 1) % this.maxSteps; // зацикливание на maxSteps
+  }
 }
 
 // ==========================================
@@ -410,32 +414,6 @@ class XChordSelector extends HTMLElement {
 }
 customElements.define('x-chord-selector', XChordSelector);
 
-class XTimelineCell extends HTMLElement {
-  static get observedAttributes() { return ['active', 'playing']; }
-  constructor() { super(); this.attachShadow({mode:'open'}); }
-  connectedCallback() { this.render(); this.shadowRoot.querySelector('.cell').addEventListener('click', () => {
-    this.toggleAttribute('active');
-    this.dispatchEvent(new CustomEvent('timeline-toggle', {detail:{active:this.hasAttribute('active')}, bubbles:true, composed:true}));
-  }); }
-  attributeChangedCallback() {
-    const cell = this.shadowRoot?.querySelector('.cell');
-    if(!cell) return;
-    cell.classList.toggle('active', this.hasAttribute('active'));
-    cell.classList.toggle('playing', this.hasAttribute('playing'));
-  }
-  render() {
-    this.shadowRoot.innerHTML = `
-      <style>
-        .cell { width: 30px; height: 20px; background: #12121a; border: 1px solid #252538; cursor: pointer; transition: all 0.1s; box-shadow: inset 0 1px 3px rgba(0,0,0,0.6); }
-        .cell.active { background: var(--neon-magenta) !important; border-color: var(--neon-magenta); box-shadow: 0 0 8px rgba(255,0,85,0.7), inset 0 0 4px #fff; }
-        .cell.playing { outline: 1.5px solid var(--neon-cyan); outline-offset: 1px; z-index: 5; }
-      </style>
-      <div class="cell"></div>`;
-    this.attributeChangedCallback();
-  }
-}
-customElements.define('x-timeline-cell', XTimelineCell);
-
 class XChannelStrip extends HTMLElement {
   constructor() { super(); this.attachShadow({mode:'open'}); }
   connectedCallback() { this.render(); this._setupEvents(); }
@@ -503,10 +481,7 @@ class XTempoControl extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
-    this.bpm = 120;
-    this.minBpm = 60;
-    this.maxBpm = 200;
-    this.tapTimes = [];
+    this.bpm = 120; this.minBpm = 60; this.maxBpm = 200; this.tapTimes = [];
   }
   connectedCallback() {
     this.bpm = parseInt(this.getAttribute('value')) || 120;
@@ -531,9 +506,7 @@ class XTempoControl extends HTMLElement {
       this.tapTimes.push(now);
       if (this.tapTimes.length >= 2) {
         let totalDeltas = 0;
-        for (let i = 1; i < this.tapTimes.length; i++) {
-          totalDeltas += (this.tapTimes[i] - this.tapTimes[i - 1]);
-        }
+        for (let i = 1; i < this.tapTimes.length; i++) totalDeltas += (this.tapTimes[i] - this.tapTimes[i - 1]);
         const averageDelta = totalDeltas / (this.tapTimes.length - 1);
         const calculatedBpm = Math.round(60000 / averageDelta);
         if (calculatedBpm >= this.minBpm && calculatedBpm <= this.maxBpm) {
@@ -653,41 +626,6 @@ class XMasterBar extends HTMLElement {
   }
 }
 customElements.define('x-master-bar', XMasterBar);
-
-class XTimeline extends HTMLElement {
-  constructor() { super(); this.attachShadow({mode:'open'}); }
-  connectedCallback() { this.render(); }
-  renderTimelineRows(tracks) {
-    const grid = this.shadowRoot.querySelector('.timeline-grid');
-    if(!grid) return;
-    grid.innerHTML = tracks.map(t => {
-      const cells = Array(8).fill(null).map((_, i) => `<x-timeline-cell data-track-id="${t.id}" data-bar="${i}" ${t.timeline[i]?'active':''}></x-timeline-cell>`).join('');
-      return `<div class="timeline-row"><div class="track-info">${t.label}</div><div class="cells-wrapper">${cells}</div></div>`;
-    }).join('');
-  }
-  setPlayingBar(bar) {
-    this.shadowRoot.querySelectorAll('x-timeline-cell').forEach(c => c.removeAttribute('playing'));
-    this.shadowRoot.querySelectorAll(`[data-bar="${bar}"]`).forEach(c => c.setAttribute('playing', ''));
-  }
-  render() {
-    this.shadowRoot.innerHTML = `
-      <style>
-        :host { display: block; background: #08080c; border: 1px solid #1a1a26; border-radius: 6px; padding: 10px; width: fit-content; }
-        .header { display: flex; align-items: center; margin-bottom: 6px; border-bottom: 1px solid #222; padding-bottom: 4px; }
-        .title { font-size: 9px; color: var(--neon-magenta); font-weight: bold; letter-spacing: 1px; text-transform: uppercase; }
-        .bars-header { display: flex; margin-left: 60px; gap: 4px; margin-bottom: 4px; }
-        .bar-num { width: 30px; text-align: center; font-size: 8px; color: var(--text-dim); font-weight: bold; }
-        .timeline-grid { display: flex; flex-direction: column; gap: 4px; }
-        .timeline-row { display: flex; align-items: center; gap: 6px; }
-        .track-info { width: 50px; font-size: 8px; color: var(--text-light); font-weight: bold; text-transform: uppercase; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .cells-wrapper { display: flex; gap: 4px; }
-      </style>
-      <div class="header"><div class="title">Song Playlist / Timeline</div></div>
-      <div class="bars-header">${Array(8).fill(null).map((_,i)=>`<div class="bar-num">${String(i+1).padStart(2,'0')}</div>`).join('')}</div>
-      <div class="timeline-grid"></div>`;
-  }
-}
-customElements.define('x-timeline', XTimeline);
 
 class XStoragePanel extends HTMLElement {
   constructor() { super(); this.attachShadow({mode:'open'}); }
@@ -831,7 +769,7 @@ class XRgbPanel extends HTMLElement {
 customElements.define('x-rgb-panel', XRgbPanel);
 
 // ==========================================
-// 3. MAIN ORCHESTRATOR
+// 3. MAIN ORCHESTRATOR (без Timeline, с Pattern Length)
 // ==========================================
 class XSequencer extends HTMLElement {
   constructor() {
@@ -871,8 +809,7 @@ class XSequencer extends HTMLElement {
     this.tracks.push({
       id: 't_'+Date.now()+Math.random().toString(36).substr(2,4),
       type, label, mute: false, gain, pan,
-      matrix: mtrx || Array(16).fill(isMel ? 0 : (isPoly ? 'OFF' : false)),
-      timeline: timeline || Array(8).fill(true),
+      matrix: mtrx || Array(this.scheduler.maxSteps).fill(isMel ? 0 : (isPoly ? 'OFF' : false)),
       synthParams: params || { decay: (type==='hat'?80:type==='noise'?500:300), envMod: 50 }
     });
     this._refreshUI();
@@ -888,19 +825,18 @@ class XSequencer extends HTMLElement {
   _refreshUI() {
     const c = this.shadowRoot.querySelector('#tracks-container');
     if (!c) return;
+    const total = this.scheduler.maxSteps;
     c.innerHTML = this.tracks.map(t => {
       const isMel = (t.type==='bass'||t.type==='synth'||t.type==='fm'||t.type==='sub'||t.type==='chip');
       const isPoly = (t.type==='poly');
-      const cells = Array(16).fill(null).map((_,i) => {
+      const cells = Array(total).fill(null).map((_,i) => {
         if (isPoly) return `<x-chord-selector data-track-id="${t.id}" data-step="${i}"></x-chord-selector>`;
         if (isMel) return `<x-note-selector data-track-id="${t.id}" data-step="${i}" data-freq="${t.matrix[i]||0}"></x-note-selector>`;
-        const grp = (i>=4&&i<=7)||(i>=12&&i<=15)?'B':'A';
+        const grp = Math.floor(i/4)%2===1 ? 'B' : 'A';
         return `<x-pad data-track-id="${t.id}" data-step="${i}" color-group="${grp}" ${t.matrix[i]?'active':''}></x-pad>`;
       }).join('');
-      return `<div class="track-row"><x-channel-strip track-id="${t.id}" label="${t.label}"></x-channel-strip><div class="pads-container">${cells}</div></div>`;
+      return `<div class="track-row"><x-channel-strip track-id="${t.id}" label="${t.label}"></x-channel-strip><div class="pads-container" style="overflow-x:auto; max-width:100%;">${cells}</div></div>`;
     }).join('');
-    const timeline = this.shadowRoot.querySelector('x-timeline');
-    if (timeline) timeline.renderTimelineRows(this.tracks);
   }
   _bindEvents() {
     const r = this.shadowRoot;
@@ -935,12 +871,6 @@ class XSequencer extends HTMLElement {
         if (t) t.matrix[parseInt(e.target.dataset.step)] = e.detail.chordName;
       }
     });
-    r.addEventListener('timeline-toggle', e => {
-      if (e.target.tagName==='X-TIMELINE-CELL') {
-        const t = this.tracks.find(x=>x.id===e.target.dataset.trackId);
-        if (t) t.timeline[parseInt(e.target.dataset.bar)] = e.detail.active;
-      }
-    });
     r.addEventListener('channel-change', e => {
       const t = this.tracks.find(x=>x.id===e.detail.trackId);
       if (!t) return;
@@ -953,17 +883,38 @@ class XSequencer extends HTMLElement {
       const t = this.tracks.find(x=>x.id===e.detail.trackId);
       if (t) t.synthParams[e.detail.param] = parseFloat(e.detail.value);
     });
+    r.querySelector('.length-selector').addEventListener('click', e => {
+      if (!e.target.classList.contains('len-btn')) return;
+      r.querySelectorAll('.len-btn').forEach(b => b.classList.remove('active'));
+      e.target.classList.add('active');
+      const newLen = parseInt(e.target.dataset.len);
+      this.scheduler.maxSteps = newLen;
+      this.tracks.forEach(t => {
+        const curr = t.matrix.length;
+        if (newLen > curr) {
+          const extra = Array(newLen - curr).fill((t.type==='bass'||t.type==='synth'||t.type==='fm'||t.type==='sub'||t.type==='chip')?0:(t.type==='poly'?'OFF':false));
+          t.matrix = t.matrix.concat(extra);
+        } else if (newLen < curr) {
+          t.matrix = t.matrix.slice(0, newLen);
+        }
+      });
+      this._refreshUI();
+    });
     r.querySelector('x-fx-panel').addEventListener('fx-change', e => this.delay.set(e.detail.param, e.detail.value));
     r.querySelector('x-storage-panel').addEventListener('storage', e => {
       if (e.detail==='save') {
-        localStorage.setItem('cyber_daw', JSON.stringify({tracks: this.tracks.map(t=>({type:t.type,label:t.label,matrix:t.matrix,timeline:t.timeline,synthParams:t.synthParams})), bpm: this.scheduler.bpm}));
+        localStorage.setItem('cyber_daw', JSON.stringify({tracks: this.tracks.map(t=>({type:t.type,label:t.label,matrix:t.matrix,synthParams:t.synthParams})), bpm: this.scheduler.bpm, maxSteps: this.scheduler.maxSteps}));
         alert('Saved!');
       } else {
         const d = JSON.parse(localStorage.getItem('cyber_daw'));
         if (!d) return alert('No data');
         this.tracks = [];
-        d.tracks.forEach(t => this._add(t.type, t.label, t.matrix, t.timeline, t.synthParams));
+        this.scheduler.maxSteps = d.maxSteps || 16;
+        d.tracks.forEach(t => this._add(t.type, t.label, t.matrix, undefined, t.synthParams));
         this.scheduler.bpm = d.bpm;
+        this._refreshUI();
+        const btns = this.shadowRoot.querySelectorAll('.len-btn');
+        btns.forEach(b => { if (parseInt(b.dataset.len) === this.scheduler.maxSteps) b.classList.add('active'); else b.classList.remove('active'); });
         alert('Loaded!');
       }
     });
@@ -973,12 +924,10 @@ class XSequencer extends HTMLElement {
     });
   }
   _process(globalStep, time) {
-    const bar = Math.floor(globalStep/16)%8;
-    const step = globalStep%16;
+    const step = globalStep % this.scheduler.maxSteps;
     requestAnimationFrame(() => {
       this.shadowRoot.querySelector('x-master-bar').updateDisplay(step);
-      this.shadowRoot.querySelector('x-timeline').setPlayingBar(bar);
-      this.shadowRoot.querySelectorAll('x-pad,x-note-selector,x-chord-selector,x-timeline-cell').forEach(e=>e.removeAttribute('playing'));
+      this.shadowRoot.querySelectorAll('x-pad,x-note-selector,x-chord-selector').forEach(e=>e.removeAttribute('playing'));
       this.shadowRoot.querySelectorAll(`[data-step="${step}"]`).forEach(e=>e.setAttribute('playing',''));
     });
     if (this.metro && step%4===0) {
@@ -989,7 +938,7 @@ class XSequencer extends HTMLElement {
       o.start(time); o.stop(time+0.05);
     }
     this.tracks.forEach(t => {
-      if (t.mute || !t.timeline[bar]) return;
+      if (t.mute) return;
       const v = t.matrix[step];
       const out = t.gain, p = t.synthParams;
       if (t.type==='kick' && v) this.drums.playKick(time, out, p);
@@ -1021,9 +970,12 @@ class XSequencer extends HTMLElement {
         .main-grid { display:flex; flex-direction:column; gap:16px; margin:16px 0; }
         .tracks-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; border-bottom:1px dashed #222; padding-bottom:6px; flex-wrap:wrap; gap:8px; }
         .tracks-header span { font-size:10px; color:var(--neon-cyan); font-weight:bold; letter-spacing:1px; text-shadow:0 0 4px rgba(0,243,255,0.4); }
+        .length-selector { display:flex; gap:4px; background:#0d0d14; padding:4px; border-radius:4px; border:1px solid #222233; }
+        .len-btn { background:#14141f; color:#555577; border:1px solid #252538; padding:4px 8px; font-size:10px; font-weight:bold; cursor:pointer; border-radius:3px; font-family:monospace; }
+        .len-btn.active { color:#fff; background:#ff0055; border-color:#ff0055; box-shadow:0 0 8px #ff0055; }
         #tracks-container { display:flex; flex-direction:column; gap:8px; }
         .track-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
-        .pads-container { display:flex; gap:3px; background:#050508; padding:4px; border-radius:4px; border:1px solid #14141f; flex-wrap:wrap; }
+        .pads-container { display:flex; gap:3px; background:#050508; padding:4px; border-radius:4px; border:1px solid #14141f; flex-wrap:nowrap; overflow-x:auto; max-width:100%; }
         .bottom-bar { display:flex; gap:16px; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; }
         .utils { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
         @media (max-width:700px) { :host{padding:10px} .main-grid{gap:10px} .track-row{flex-direction:column;align-items:flex-start;gap:4px} .pads-container{justify-content:flex-start} .bottom-bar{flex-direction:column;gap:10px} .bottom-bar>*{width:100%} }
@@ -1033,11 +985,18 @@ class XSequencer extends HTMLElement {
         <x-rgb-panel>
           <div class="tracks-header">
             <span>STEP SEQUENCER / PIANO ROLL</span>
-            <x-add-track-bar></x-add-track-bar>
+            <div style="display:flex; gap:8px; align-items:center;">
+              <div class="length-selector">
+                <button class="len-btn active" data-len="16">16</button>
+                <button class="len-btn" data-len="32">32</button>
+                <button class="len-btn" data-len="48">48</button>
+                <button class="len-btn" data-len="64">64</button>
+              </div>
+              <x-add-track-bar></x-add-track-bar>
+            </div>
           </div>
           <div id="tracks-container"></div>
         </x-rgb-panel>
-        <x-rgb-panel><x-timeline></x-timeline></x-rgb-panel>
       </div>
       <div class="bottom-bar">
         <x-rgb-panel><x-fx-panel></x-fx-panel></x-rgb-panel>
