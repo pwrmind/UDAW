@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>CYBER-DAW // Step Sequencer with Pattern Length</title>
+<title>CYBER-DAW v2 // Plugin-Based Step Sequencer</title>
 <style>
   :root {
     --bg-main: #030305;
@@ -35,148 +35,26 @@
 
 <script type="module">
 // ==========================================
-// 1. AUDIO ENGINE (9 синтезаторов)
+// PLUGIN REGISTRY
 // ==========================================
-class DrumSynth {
-  constructor(ctx) { this.ctx = ctx; }
-  playKick(time, out, p = {}) {
-    const d = (p.decay || 300) / 1000, m = (p.envMod || 50) / 100;
-    const o = this.ctx.createOscillator(), g = this.ctx.createGain();
-    o.connect(g); g.connect(out);
-    o.frequency.setValueAtTime(150, time);
-    o.frequency.exponentialRampToValueAtTime(0.01, time + d * (1 + m * 2));
-    g.gain.setValueAtTime(1, time);
-    g.gain.exponentialRampToValueAtTime(0.01, time + d * (1 + m * 2));
-    o.start(time); o.stop(time + d * (1 + m * 2));
+class PluginRegistry {
+  constructor() { this.plugins = new Map(); }
+  register(plugin) {
+    if (!plugin.id || !plugin.trigger) throw new Error('Invalid plugin: missing id or trigger');
+    this.plugins.set(plugin.id, plugin);
+    console.log(`✅ Plugin registered: ${plugin.name}`);
   }
-  playSnare(time, out, p = {}) {
-    const d = (p.decay || 200) / 1000, m = (p.envMod || 50) / 100;
-    const buf = this.ctx.createBuffer(1, this.ctx.sampleRate * (d + m * 0.3), this.ctx.sampleRate);
-    const data = buf.getChannelData(0);
-    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
-    const noise = this.ctx.createBufferSource(); noise.buffer = buf;
-    const f = this.ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = 1000;
-    const g = this.ctx.createGain();
-    g.gain.setValueAtTime(0.7, time); g.gain.exponentialRampToValueAtTime(0.01, time + d * (1 + m));
-    noise.connect(f); f.connect(g); g.connect(out);
-    noise.start(time); noise.stop(time + d * (1 + m));
-  }
-  playHihat(time, out, p = {}) {
-    const d = (p.decay || 80) / 1000;
-    const buf = this.ctx.createBuffer(1, this.ctx.sampleRate * d, this.ctx.sampleRate);
-    const data = buf.getChannelData(0);
-    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
-    const noise = this.ctx.createBufferSource(); noise.buffer = buf;
-    const f = this.ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = 5000;
-    const g = this.ctx.createGain();
-    g.gain.setValueAtTime(0.5, time); g.gain.exponentialRampToValueAtTime(0.01, time + d);
-    noise.connect(f); f.connect(g); g.connect(out);
-    noise.start(time); noise.stop(time + d);
-  }
-  playTom(time, out, p = {}) {
-    const d = (p.decay || 400) / 1000, m = (p.envMod || 50) / 100;
-    const o = this.ctx.createOscillator(), g = this.ctx.createGain();
-    o.connect(g); g.connect(out);
-    o.frequency.setValueAtTime(120, time);
-    o.frequency.exponentialRampToValueAtTime(0.01, time + d * (1 + m));
-    g.gain.setValueAtTime(0.8, time);
-    g.gain.exponentialRampToValueAtTime(0.01, time + d * (1 + m));
-    o.start(time); o.stop(time + d * (1 + m));
-  }
+  get(id) { return this.plugins.get(id); }
+  getAll() { return Array.from(this.plugins.values()); }
+  getByCategory(cat) { return this.getAll().filter(p => p.category === cat); }
 }
 
-class SynthVoice {
-  constructor(ctx) { this.ctx = ctx; }
-  playNote(freq, time, out, p = {}) {
-    if (!freq) return;
-    const d = (p.decay || 200) / 1000, m = (p.envMod || 50) / 100;
-    const o = this.ctx.createOscillator(), f = this.ctx.createBiquadFilter(), g = this.ctx.createGain();
-    o.type = 'sawtooth'; o.frequency.setValueAtTime(freq, time);
-    f.type = 'lowpass'; f.Q.setValueAtTime(10 + m * 10, time);
-    f.frequency.setValueAtTime(1200, time);
-    f.frequency.exponentialRampToValueAtTime(150 - m * 50, time + d * 0.8);
-    g.gain.setValueAtTime(0.4, time); g.gain.exponentialRampToValueAtTime(0.01, time + d * (1 + m));
-    o.connect(f); f.connect(g); g.connect(out);
-    o.start(time); o.stop(time + d * (1 + m));
-  }
-}
+window.CYBER_DAW = window.CYBER_DAW || {};
+window.CYBER_DAW.registry = new PluginRegistry();
 
-class PolySynth {
-  constructor(ctx) {
-    this.ctx = ctx;
-    this.chords = {
-      'OFF': [],
-      'Min7': [130.81, 155.56, 196.00, 233.08],
-      'Maj7': [130.81, 164.81, 196.00, 246.94],
-      'Sus4': [146.83, 196.00, 220.00, 293.66],
-      'Dim':  [116.54, 138.59, 164.81, 233.08]
-    };
-  }
-  playChord(name, time, out) {
-    const freqs = this.chords[name];
-    if (!freqs || freqs.length === 0) return;
-    const mainGain = this.ctx.createGain();
-    mainGain.gain.setValueAtTime(0.25, time);
-    mainGain.gain.exponentialRampToValueAtTime(0.001, time + 0.8);
-    freqs.forEach(f => {
-      const o = this.ctx.createOscillator();
-      o.type = 'triangle'; o.frequency.setValueAtTime(f, time);
-      o.detune.setValueAtTime(Math.random() * 10 - 5, time);
-      o.connect(mainGain); o.start(time); o.stop(time + 0.8);
-    });
-    mainGain.connect(out);
-  }
-}
-
-class ExtendedSynths {
-  constructor(ctx) { this.ctx = ctx; }
-  playFMBell(freq, time, out) {
-    if (!freq) return;
-    const carrier = this.ctx.createOscillator(), modulator = this.ctx.createOscillator();
-    const modGain = this.ctx.createGain(), gain = this.ctx.createGain();
-    carrier.type = 'sine'; modulator.type = 'sine';
-    carrier.frequency.setValueAtTime(freq, time);
-    modulator.frequency.setValueAtTime(freq * 1.414, time);
-    modGain.gain.setValueAtTime(800, time);
-    modGain.gain.exponentialRampToValueAtTime(0.01, time + 0.3);
-    gain.gain.setValueAtTime(0.4, time);
-    gain.gain.exponentialRampToValueAtTime(0.001, time + 0.6);
-    modulator.connect(modGain); modGain.connect(carrier.frequency);
-    carrier.connect(gain); gain.connect(out);
-    modulator.start(time); carrier.start(time);
-    modulator.stop(time + 0.6); carrier.stop(time + 0.6);
-  }
-  playNoiseSweep(time, out) {
-    const buf = this.ctx.createBuffer(1, this.ctx.sampleRate * 1.0, this.ctx.sampleRate);
-    const data = buf.getChannelData(0);
-    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
-    const noise = this.ctx.createBufferSource(); noise.buffer = buf;
-    const f = this.ctx.createBiquadFilter(); f.type = 'bandpass'; f.Q.setValueAtTime(5, time);
-    f.frequency.setValueAtTime(200, time);
-    f.frequency.exponentialRampToValueAtTime(7000, time + 0.9);
-    const g = this.ctx.createGain();
-    g.gain.setValueAtTime(0.3, time); g.gain.linearRampToValueAtTime(0.001, time + 1.0);
-    noise.connect(f); f.connect(g); g.connect(out);
-    noise.start(time); noise.stop(time + 1.0);
-  }
-  playSubBass(freq, time, out) {
-    if (!freq) return;
-    const o = this.ctx.createOscillator(), g = this.ctx.createGain();
-    o.type = 'sine'; o.frequency.setValueAtTime(freq / 4, time);
-    g.gain.setValueAtTime(0.6, time); g.gain.linearRampToValueAtTime(0.001, time + 0.4);
-    o.connect(g); g.connect(out); o.start(time); o.stop(time + 0.4);
-  }
-  playChiptune(freq, time, out) {
-    if (!freq) return;
-    const o = this.ctx.createOscillator(), g = this.ctx.createGain();
-    o.type = 'square';
-    o.frequency.setValueAtTime(freq * 2, time);
-    o.frequency.linearRampToValueAtTime(freq / 2, time + 0.1);
-    g.gain.setValueAtTime(0.2, time); g.gain.exponentialRampToValueAtTime(0.001, time + 0.1);
-    o.connect(g); g.connect(out); o.start(time); o.stop(time + 0.1);
-  }
-}
-
+// ==========================================
+// AUDIO EFFECTS
+// ==========================================
 class DelayEffect {
   constructor(ctx) {
     this.ctx = ctx; this.input = ctx.createGain(); this.output = ctx.createGain();
@@ -198,10 +76,13 @@ class DelayEffect {
   }
 }
 
+// ==========================================
+// SEQUENCER SCHEDULER
+// ==========================================
 class SequencerScheduler {
   constructor(ctx, cb) {
     this.ctx = ctx; this.cb = cb; this.bpm = 120; this.on = false; this.t = 0; this.step = 0;
-    this.maxSteps = 16; // по умолчанию 16 шагов
+    this.maxSteps = 16;
   }
   start() { if (this.on) return; this.on = true; this.step = 0; this.t = this.ctx.currentTime; this._loop(); }
   stop() { this.on = false; clearTimeout(this.timer); }
@@ -211,82 +92,377 @@ class SequencerScheduler {
   }
   _next() {
     this.t += 0.25 * (60/this.bpm);
-    this.step = (this.step + 1) % this.maxSteps; // зацикливание на maxSteps
+    this.step = (this.step + 1) % this.maxSteps;
   }
 }
 
 // ==========================================
-// 2. UI COMPONENTS (полный набор)
+// UI COMPONENTS
 // ==========================================
+
+// XKnob — улучшенная ручка с taper, unit, color
 class XKnob extends HTMLElement {
-  static get observedAttributes() { return ['min', 'max', 'value', 'label']; }
-  constructor() { super(); this.attachShadow({mode:'open'}); this.startY=0; this.startVal=0; }
+  static get observedAttributes() { return ['min','max','value','label','taper','unit','color','default']; }
+  constructor() {
+    super();
+    this.attachShadow({mode:'open'});
+    this.taper = 'linear';
+    this.color = '#00f3ff';
+    this.unit = '';
+    this._default = undefined;
+  }
   connectedCallback() { this._updateProps(); this.render(); this._setupEvents(); }
   attributeChangedCallback() { this._updateProps(); this._updateVisuals(); }
   _updateProps() {
     this.min = parseFloat(this.getAttribute('min')) || 0;
     this.max = parseFloat(this.getAttribute('max')) || 100;
-    this.value = parseFloat(this.getAttribute('value')) || 50;
     this.label = this.getAttribute('label') || '';
+    this.unit = this.getAttribute('unit') || '';
+    this.taper = this.getAttribute('taper') || 'linear';
+    this.color = this.getAttribute('color') || '#00f3ff';
+    const def = parseFloat(this.getAttribute('default'));
+    if (!isNaN(def)) this._default = def;
+    const rawVal = parseFloat(this.getAttribute('value'));
+    if (!isNaN(rawVal)) this._rawValue = rawVal;
+    if (this._rawValue === undefined) this._rawValue = this._default !== undefined ? this._default : this.min;
+  }
+  get value() { return this._rawValue; }
+  set value(v) { this._rawValue = Math.max(this.min, Math.min(this.max, v)); this._updateVisuals(); }
+  _posToValue(pos) {
+    switch (this.taper) {
+      case 'exp': return this.min * Math.pow(this.max / this.min, pos);
+      case 'log': return this.min + (this.max - this.min) * (Math.exp(pos * 3) - 1) / (Math.E ** 3 - 1);
+      default: return this.min + pos * (this.max - this.min);
+    }
+  }
+  _valueToPos(v) {
+    switch (this.taper) {
+      case 'exp': return Math.log(v / this.min) / Math.log(this.max / this.min);
+      case 'log': return Math.log(1 + (v - this.min) * (Math.E ** 3 - 1) / (this.max - this.min)) / 3;
+      default: return (v - this.min) / (this.max - this.min);
+    }
   }
   _setupEvents() {
     const knob = this.shadowRoot.querySelector('.knob-circle');
     if (!knob) return;
     const onMove = (e) => {
-      const deltaY = this.startY - e.clientY;
-      const range = this.max - this.min;
-      let newVal = this.startVal + (deltaY / 150) * range;
-      this.value = Math.max(this.min, Math.min(this.max, newVal));
+      const deltaY = this._startY - (e.clientY || e.touches[0].clientY);
+      const pos = Math.max(0, Math.min(1, this._startPos + deltaY / 150));
+      this._rawValue = this._posToValue(pos);
       this._updateVisuals();
-      this.dispatchEvent(new Event('input', {bubbles:true}));
+      this.dispatchEvent(new CustomEvent('input', { detail: { id: this.id, value: this._rawValue }, bubbles: true, composed: true }));
     };
-    const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
-    knob.addEventListener('mousedown', (e) => {
-      e.preventDefault(); this.startY = e.clientY; this.startVal = this.value;
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp);
+      document.removeEventListener('touchmove', onMove); document.removeEventListener('touchend', onUp);
+    };
+    const onStart = (e) => {
+      e.preventDefault();
+      this._startY = e.clientY || e.touches[0].clientY;
+      this._startPos = this._valueToPos(this._rawValue);
       document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp);
-    });
-    knob.addEventListener('touchstart', (e) => {
-      e.preventDefault(); this.startY = e.touches[0].clientY; this.startVal = this.value;
-      const onTouchMove = (ev) => {
-        const deltaY = this.startY - ev.touches[0].clientY;
-        const range = this.max - this.min;
-        let newVal = this.startVal + (deltaY / 150) * range;
-        this.value = Math.max(this.min, Math.min(this.max, newVal));
+      document.addEventListener('touchmove', onMove, {passive:false}); document.addEventListener('touchend', onUp);
+    };
+    knob.addEventListener('mousedown', onStart);
+    knob.addEventListener('touchstart', onStart, {passive:false});
+    knob.addEventListener('dblclick', () => {
+      if (this._default !== undefined) {
+        this._rawValue = this._default;
         this._updateVisuals();
-        this.dispatchEvent(new Event('input', {bubbles:true}));
-      };
-      const onTouchEnd = () => { document.removeEventListener('touchmove', onTouchMove); document.removeEventListener('touchend', onTouchEnd); };
-      document.addEventListener('touchmove', onTouchMove, {passive: false});
-      document.addEventListener('touchend', onTouchEnd);
+        this.dispatchEvent(new CustomEvent('input', { detail: { id: this.id, value: this._rawValue }, bubbles: true, composed: true }));
+      }
     });
   }
   _updateVisuals() {
-    if(!this.shadowRoot) return;
     const pointer = this.shadowRoot.querySelector('.pointer');
     const valEl = this.shadowRoot.querySelector('.val');
-    if(!pointer || !valEl) return;
-    const percent = (this.value - this.min) / (this.max - this.min);
-    const deg = -135 + percent * 270;
+    const arc = this.shadowRoot.querySelector('.arc');
+    if (!pointer || !valEl) return;
+    const pos = this._valueToPos(this._rawValue);
+    const deg = -135 + pos * 270;
     pointer.style.transform = `rotate(${deg}deg)`;
-    valEl.textContent = Math.round(this.value);
+    pointer.style.background = this.color;
+    pointer.style.boxShadow = `0 0 4px ${this.color}`;
+    let display;
+    if (this._rawValue >= 1000) display = (this._rawValue/1000).toFixed(1) + 'k';
+    else if (this._rawValue < 1 && this._rawValue > 0) display = this._rawValue.toFixed(2);
+    else display = Math.round(this._rawValue);
+    valEl.textContent = display + (this.unit ? ' ' + this.unit : '');
+    if (arc) {
+      const endAngle = -225 + pos * 270;
+      arc.setAttribute('d', this._describeArc(13, 13, 11, -225, endAngle));
+      arc.style.stroke = this.color;
+    }
+  }
+  _describeArc(x, y, r, startAngle, endAngle) {
+    const start = this._polarToCartesian(x, y, r, endAngle);
+    const end = this._polarToCartesian(x, y, r, startAngle);
+    const largeArc = endAngle - startAngle <= 180 ? "0" : "1";
+    return `M ${start.x} ${start.y} A ${r} ${r} 0 ${largeArc} 0 ${end.x} ${end.y}`;
+  }
+  _polarToCartesian(cx, cy, r, angle) {
+    const rad = (angle - 90) * Math.PI / 180;
+    return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
   }
   render() {
     this.shadowRoot.innerHTML = `
       <style>
-        :host { display: inline-flex; flex-direction: column; align-items: center; width: 42px; user-select: none; }
-        .label { font-size: 8px; color: var(--text-dim); margin-bottom: 2px; text-transform: uppercase; font-weight: bold; }
-        .knob-circle { width: 26px; height: 26px; background: #1a1a26; border: 1px solid var(--border-color); border-radius: 50%; position: relative; cursor: ns-resize; box-shadow: inset 0 2px 4px rgba(0,0,0,0.8); }
-        .pointer { width: 2px; height: 10px; background: var(--neon-cyan); position: absolute; top: 2px; left: 12px; transform-origin: bottom center; box-shadow: 0 0 4px var(--neon-cyan); }
-        .val { font-size: 8px; color: var(--text-light); margin-top: 2px; font-weight: bold; }
+        :host { display: inline-flex; flex-direction: column; align-items: center; width: 48px; user-select: none; }
+        .label { font-size: 8px; color: var(--text-dim); margin-bottom: 2px; text-transform: uppercase; font-weight: bold; letter-spacing: 0.5px; }
+        .knob-wrap { position: relative; width: 32px; height: 32px; }
+        svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+        .arc { fill: none; stroke-width: 2; stroke-linecap: round; opacity: 0.8; }
+        .track { fill: none; stroke: #222; stroke-width: 2; }
+        .knob-circle { width: 26px; height: 26px; background: radial-gradient(circle at 30% 30%, #2a2a3a, #0a0a14); 
+                       border: 1px solid #333; border-radius: 50%; position: absolute; top: 3px; left: 3px;
+                       cursor: ns-resize; box-shadow: inset 0 2px 4px rgba(0,0,0,0.8), 0 1px 2px rgba(0,0,0,0.5); }
+        .pointer { width: 2px; height: 10px; background: var(--neon-cyan); position: absolute; 
+                   top: 2px; left: 12px; transform-origin: bottom center; border-radius: 1px; }
+        .val { font-size: 9px; color: var(--text-light); margin-top: 3px; font-weight: bold; 
+               font-variant-numeric: tabular-nums; min-width: 40px; text-align: center; }
       </style>
       <div class="label">${this.label}</div>
-      <div class="knob-circle"><div class="pointer"></div></div>
+      <div class="knob-wrap">
+        <svg viewBox="0 0 26 26">
+          <path class="track" d="${this._describeArc(13, 13, 11, -225, 45)}"/>
+          <path class="arc" d=""/>
+        </svg>
+        <div class="knob-circle"><div class="pointer"></div></div>
+      </div>
       <div class="val">0</div>`;
     this._updateVisuals();
   }
 }
 customElements.define('x-knob', XKnob);
 
+// XSelect — выпадающий список
+class XSelect extends HTMLElement {
+  static get observedAttributes() { return ['options','value','label']; }
+  constructor() { super(); this.attachShadow({mode:'open'}); this._options = []; }
+  connectedCallback() {
+    const raw = this.getAttribute('options');
+    if (raw) { try { this._options = JSON.parse(raw); } catch(e) {} }
+    this.render();
+    this.shadowRoot.querySelector('select').addEventListener('change', (e) => {
+      this.dispatchEvent(new CustomEvent('input', { detail: { id: this.id, value: e.target.value }, bubbles: true, composed: true }));
+    });
+  }
+  render() {
+    const label = this.getAttribute('label') || '';
+    const value = this.getAttribute('value') || '';
+    const opts = this._options.map(o => {
+      const val = typeof o === 'string' ? o : o.value;
+      const lbl = typeof o === 'string' ? o : (o.label || o.value);
+      const sel = val === value ? 'selected' : '';
+      return `<option value="${val}" ${sel}>${lbl}</option>`;
+    }).join('');
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+        .label { font-size: 8px; color: var(--text-dim); text-transform: uppercase; font-weight: bold; }
+        select { background: #14141f; color: var(--neon-cyan); border: 1px solid var(--border-color);
+                 padding: 4px 6px; font-family: var(--font-mono); font-size: 10px; font-weight: bold;
+                 border-radius: 3px; outline: none; cursor: pointer; min-width: 70px; }
+        select:hover { border-color: var(--neon-cyan); box-shadow: 0 0 4px rgba(0,243,255,0.3); }
+        option { background: #0a0a0f; color: #fff; }
+      </style>
+      <div class="label">${label}</div>
+      <select>${opts}</select>`;
+  }
+}
+customElements.define('x-select', XSelect);
+
+// XToggle — переключатель
+class XToggle extends HTMLElement {
+  static get observedAttributes() { return ['value','label']; }
+  constructor() { super(); this.attachShadow({mode:'open'}); this._on = false; }
+  connectedCallback() {
+    this._on = this.getAttribute('value') === 'true';
+    this.render();
+    this.shadowRoot.querySelector('.switch').addEventListener('click', () => {
+      this._on = !this._on;
+      this._updateVisuals();
+      this.dispatchEvent(new CustomEvent('input', { detail: { id: this.id, value: this._on }, bubbles: true, composed: true }));
+    });
+  }
+  _updateVisuals() {
+    const sw = this.shadowRoot.querySelector('.switch');
+    const led = this.shadowRoot.querySelector('.led');
+    if (sw) sw.classList.toggle('on', this._on);
+    if (led) led.classList.toggle('on', this._on);
+  }
+  render() {
+    const label = this.getAttribute('label') || '';
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host { display: inline-flex; flex-direction: column; align-items: center; gap: 3px; user-select: none; }
+        .label { font-size: 8px; color: var(--text-dim); text-transform: uppercase; font-weight: bold; }
+        .switch { width: 28px; height: 14px; background: #14141f; border: 1px solid #333;
+                  border-radius: 7px; position: relative; cursor: pointer; transition: all 0.15s; }
+        .switch::after { content: ''; position: absolute; width: 10px; height: 10px; background: #555;
+                         border-radius: 50%; top: 1px; left: 1px; transition: all 0.15s; }
+        .switch.on { background: rgba(0,243,255,0.15); border-color: var(--neon-cyan); }
+        .switch.on::after { left: 15px; background: var(--neon-cyan); box-shadow: 0 0 6px var(--neon-cyan); }
+        .led { width: 4px; height: 4px; border-radius: 50%; background: #333; }
+        .led.on { background: var(--neon-cyan); box-shadow: 0 0 4px var(--neon-cyan); }
+      </style>
+      <div class="label">${label}</div>
+      <div class="switch"><div class="led"></div></div>`;
+    this._updateVisuals();
+  }
+}
+customElements.define('x-toggle', XToggle);
+
+// XEnvelope — ADSR-редактор
+class XEnvelope extends HTMLElement {
+  static get observedAttributes() { return ['value','label']; }
+  constructor() {
+    super();
+    this.attachShadow({mode:'open'});
+    this._env = { a: 10, d: 200, s: 0.7, r: 300 };
+  }
+  connectedCallback() {
+    const raw = this.getAttribute('value');
+    if (raw) { try { this._env = JSON.parse(raw); } catch(e) {} }
+    this.render();
+    this._setupDrag();
+  }
+  _emit() {
+    this.dispatchEvent(new CustomEvent('input', { detail: { id: this.id, value: {...this._env} }, bubbles: true, composed: true }));
+  }
+  _setupDrag() {
+    const svg = this.shadowRoot.querySelector('svg');
+    let dragging = null;
+    const getPoint = (e) => {
+      const rect = svg.getBoundingClientRect();
+      const x = (e.clientX || e.touches[0].clientX) - rect.left;
+      const y = (e.clientY || e.touches[0].clientY) - rect.top;
+      return { x: Math.max(0, Math.min(1, x / rect.width)), y: Math.max(0, Math.min(1, y / rect.height)) };
+    };
+    const onMove = (e) => {
+      if (!dragging) return;
+      e.preventDefault();
+      const p = getPoint(e);
+      if (dragging === 'A') this._env.a = Math.max(1, p.x * 2000);
+      else if (dragging === 'D') { this._env.d = Math.max(1, p.x * 2000); this._env.s = 1 - p.y; }
+      else if (dragging === 'S') this._env.s = 1 - p.y;
+      else if (dragging === 'R') this._env.r = Math.max(1, p.x * 2000);
+      this._draw();
+      this._emit();
+    };
+    const onUp = () => {
+      dragging = null;
+      document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp);
+      document.removeEventListener('touchmove', onMove); document.removeEventListener('touchend', onUp);
+    };
+    ['A','D','S','R'].forEach(key => {
+      const el = this.shadowRoot.querySelector(`.handle-${key}`);
+      if (!el) return;
+      const start = (e) => {
+        e.preventDefault();
+        dragging = key;
+        document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp);
+        document.addEventListener('touchmove', onMove, {passive:false}); document.addEventListener('touchend', onUp);
+      };
+      el.addEventListener('mousedown', start);
+      el.addEventListener('touchstart', start, {passive:false});
+    });
+  }
+  _draw() {
+    const svg = this.shadowRoot.querySelector('svg');
+    const w = 160, h = 60;
+    const total = this._env.a + this._env.d + 200 + this._env.r;
+    const scale = w / total;
+    const xA = this._env.a * scale;
+    const xD = xA + this._env.d * scale;
+    const xS = xD + 200 * scale;
+    const xR = xS + this._env.r * scale;
+    const yS = h - this._env.s * h;
+    const path = `M 0 ${h} L ${xA} 0 L ${xD} ${yS} L ${xS} ${yS} L ${xR} ${h}`;
+    svg.querySelector('.env-path').setAttribute('d', path);
+    svg.querySelector('.handle-A').setAttribute('cx', xA); svg.querySelector('.handle-A').setAttribute('cy', 0);
+    svg.querySelector('.handle-D').setAttribute('cx', xD); svg.querySelector('.handle-D').setAttribute('cy', yS);
+    svg.querySelector('.handle-S').setAttribute('cx', xS); svg.querySelector('.handle-S').setAttribute('cy', yS);
+    svg.querySelector('.handle-R').setAttribute('cx', xR); svg.querySelector('.handle-R').setAttribute('cy', h);
+    this.shadowRoot.querySelector('.info').innerHTML = `A:${Math.round(this._env.a)} D:${Math.round(this._env.d)} S:${this._env.s.toFixed(2)} R:${Math.round(this._env.r)}`;
+  }
+  render() {
+    const label = this.getAttribute('label') || 'ENVELOPE';
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host { display: inline-block; user-select: none; }
+        .wrap { background: #0a0a0f; border: 1px solid var(--border-color); border-radius: 4px; padding: 6px; }
+        .label { font-size: 8px; color: var(--neon-magenta); text-transform: uppercase; font-weight: bold; margin-bottom: 4px; letter-spacing: 1px; }
+        svg { display: block; background: #050508; border-radius: 2px; cursor: crosshair; }
+        .env-path { fill: none; stroke: var(--neon-cyan); stroke-width: 1.5; filter: drop-shadow(0 0 3px var(--neon-cyan)); }
+        .handle { fill: var(--neon-magenta); cursor: grab; filter: drop-shadow(0 0 3px var(--neon-magenta)); }
+        .handle:hover { r: 5; }
+        .info { font-size: 8px; color: var(--text-light); margin-top: 4px; font-family: var(--font-mono); text-align: center; letter-spacing: 1px; }
+      </style>
+      <div class="wrap">
+        <div class="label">${label}</div>
+        <svg width="160" height="60" viewBox="0 0 160 60">
+          <path class="env-path" d="M 0 60 L 0 60"/>
+          <circle class="handle handle-A" r="4"/>
+          <circle class="handle handle-D" r="4"/>
+          <circle class="handle handle-S" r="4"/>
+          <circle class="handle handle-R" r="4"/>
+        </svg>
+        <div class="info">A:0 D:0 S:0 R:0</div>
+      </div>`;
+    this._draw();
+  }
+}
+customElements.define('x-envelope', XEnvelope);
+
+// XWaveformPreview — превью формы волны
+class XWaveformPreview extends HTMLElement {
+  static get observedAttributes() { return ['wave','freq']; }
+  constructor() { super(); this.attachShadow({mode:'open'}); this._raf = null; }
+  connectedCallback() { this.render(); this._animate(); }
+  disconnectedCallback() { if (this._raf) cancelAnimationFrame(this._raf); }
+  _animate() {
+    const canvas = this.shadowRoot.querySelector('canvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width, h = canvas.height;
+    const wave = this.getAttribute('wave') || 'sine';
+    const freq = parseFloat(this.getAttribute('freq')) || 2;
+    let phase = 0;
+    const draw = () => {
+      ctx.fillStyle = '#050508'; ctx.fillRect(0, 0, w, h);
+      ctx.strokeStyle = '#00f3ff'; ctx.lineWidth = 1.5;
+      ctx.shadowColor = '#00f3ff'; ctx.shadowBlur = 4;
+      ctx.beginPath();
+      for (let x = 0; x < w; x++) {
+        const t = (x / w) * Math.PI * 2 * freq + phase;
+        let y;
+        switch (wave) {
+          case 'sawtooth': y = ((t / Math.PI) % 2) - 1; break;
+          case 'square': y = Math.sin(t) > 0 ? 1 : -1; break;
+          case 'triangle': y = 2 * Math.abs(2 * ((t / Math.PI / 2) % 1) - 1) - 1; break;
+          default: y = Math.sin(t);
+        }
+        const py = h/2 - y * h/2 * 0.8;
+        if (x === 0) ctx.moveTo(x, py); else ctx.lineTo(x, py);
+      }
+      ctx.stroke();
+      phase += 0.05;
+      this._raf = requestAnimationFrame(draw);
+    };
+    draw();
+  }
+  render() {
+    this.shadowRoot.innerHTML = `
+      <style>
+        canvas { display: block; border: 1px solid var(--border-color); border-radius: 3px; background: #050508; }
+      </style>
+      <canvas width="80" height="30"></canvas>`;
+  }
+}
+customElements.define('x-waveform-preview', XWaveformPreview);
+
+// XLedButton
 class XLedButton extends HTMLElement {
   static get observedAttributes() { return ['active', 'label']; }
   constructor() { super(); this.attachShadow({mode:'open'}); }
@@ -316,6 +492,7 @@ class XLedButton extends HTMLElement {
 }
 customElements.define('x-led-button', XLedButton);
 
+// XPad
 class XPad extends HTMLElement {
   static get observedAttributes() { return ['active', 'playing', 'color-group']; }
   constructor() { super(); this.attachShadow({mode:'open'}); }
@@ -346,6 +523,7 @@ class XPad extends HTMLElement {
 }
 customElements.define('x-pad', XPad);
 
+// XNoteSelector
 class XNoteSelector extends HTMLElement {
   constructor() { 
     super(); this.attachShadow({mode:'open'});
@@ -383,6 +561,7 @@ class XNoteSelector extends HTMLElement {
 }
 customElements.define('x-note-selector', XNoteSelector);
 
+// XChordSelector
 class XChordSelector extends HTMLElement {
   static get observedAttributes() { return ['playing']; }
   constructor() { super(); this.attachShadow({mode:'open'}); this.idx=0; this.chords=['OFF','Min7','Maj7','Sus4','Dim']; }
@@ -414,6 +593,7 @@ class XChordSelector extends HTMLElement {
 }
 customElements.define('x-chord-selector', XChordSelector);
 
+// XChannelStrip
 class XChannelStrip extends HTMLElement {
   constructor() { super(); this.attachShadow({mode:'open'}); }
   connectedCallback() { this.render(); this._setupEvents(); }
@@ -454,6 +634,7 @@ class XChannelStrip extends HTMLElement {
 }
 customElements.define('x-channel-strip', XChannelStrip);
 
+// XFxPanel
 class XFxPanel extends HTMLElement {
   constructor() { super(); this.attachShadow({mode:'open'}); }
   connectedCallback() { this.render(); this.shadowRoot.addEventListener('input', (e) => {
@@ -476,6 +657,7 @@ class XFxPanel extends HTMLElement {
 }
 customElements.define('x-fx-panel', XFxPanel);
 
+// XTempoControl
 class XTempoControl extends HTMLElement {
   static get observedAttributes() { return ['value']; }
   constructor() {
@@ -500,9 +682,7 @@ class XTempoControl extends HTMLElement {
     root.querySelector('#bpm-down').addEventListener('click', () => this.changeBpm(-1));
     root.querySelector('#bpm-tap').addEventListener('click', () => {
       const now = performance.now();
-      if (this.tapTimes.length > 0 && now - this.tapTimes[this.tapTimes.length - 1] > 2000) {
-        this.tapTimes = [];
-      }
+      if (this.tapTimes.length > 0 && now - this.tapTimes[this.tapTimes.length - 1] > 2000) this.tapTimes = [];
       this.tapTimes.push(now);
       if (this.tapTimes.length >= 2) {
         let totalDeltas = 0;
@@ -531,10 +711,7 @@ class XTempoControl extends HTMLElement {
     if (display) display.textContent = String(this.bpm).padStart(3, '0');
   }
   emitBpmChange() {
-    this.dispatchEvent(new CustomEvent('bpm-change', {
-      detail: { bpm: this.bpm },
-      bubbles: true, composed: true
-    }));
+    this.dispatchEvent(new CustomEvent('bpm-change', { detail: { bpm: this.bpm }, bubbles: true, composed: true }));
   }
   render() {
     this.shadowRoot.innerHTML = `
@@ -559,6 +736,7 @@ class XTempoControl extends HTMLElement {
 }
 customElements.define('x-tempo-control', XTempoControl);
 
+// XMasterBar
 class XMasterBar extends HTMLElement {
   constructor() { super(); this.attachShadow({mode:'open'}); this.analyser=null; this.dataArray=null; }
   connectedCallback() { this.render(); this._setupEvents(); }
@@ -627,6 +805,7 @@ class XMasterBar extends HTMLElement {
 }
 customElements.define('x-master-bar', XMasterBar);
 
+// XStoragePanel
 class XStoragePanel extends HTMLElement {
   constructor() { super(); this.attachShadow({mode:'open'}); }
   connectedCallback() {
@@ -651,6 +830,7 @@ class XStoragePanel extends HTMLElement {
 }
 customElements.define('x-storage-panel', XStoragePanel);
 
+// XRecorderButton
 class XRecorderButton extends HTMLElement {
   constructor() { super(); this.attachShadow({mode:'open'}); this.isRec = false; }
   connectedCallback() {
@@ -678,9 +858,22 @@ class XRecorderButton extends HTMLElement {
 }
 customElements.define('x-recorder-button', XRecorderButton);
 
+// XAddTrackBar
 class XAddTrackBar extends HTMLElement {
   constructor() { super(); this.attachShadow({mode:'open'}); }
   connectedCallback() {
+    this.render();
+    this.shadowRoot.querySelector('#add').addEventListener('click', () => {
+      const pluginId = this.shadowRoot.querySelector('#type').value;
+      this.dispatchEvent(new CustomEvent('add-track', {detail:{pluginId}, bubbles:true, composed:true}));
+    });
+  }
+  setPlugins(plugins) {
+    const select = this.shadowRoot.querySelector('#type');
+    if (!select) return;
+    select.innerHTML = plugins.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
+  }
+  render() {
     this.shadowRoot.innerHTML = `
       <style>
         .bar { display: flex; gap: 6px; align-items: center; }
@@ -688,68 +881,196 @@ class XAddTrackBar extends HTMLElement {
         button { background: var(--neon-magenta); color: #fff; border: none; padding: 3px 10px; font-weight: bold; cursor: pointer; border-radius: 3px; font-family: var(--font-mono); font-size: 9px; box-shadow: 0 0 8px rgba(255,0,85,0.4); }
       </style>
       <div class="bar">
-        <select id="type">
-          <option value="kick">🥁 KICK</option>
-          <option value="snare">🥁 SNARE</option>
-          <option value="hat">🔔 HIHAT</option>
-          <option value="tom">🪘 TOM</option>
-          <option value="bass">🎸 BASS</option>
-          <option value="synth">🎹 SYNTH</option>
-          <option value="poly">🎛️ POLY</option>
-          <option value="fm">🔔 FM BELL</option>
-          <option value="noise">🌪️ NOISE</option>
-          <option value="sub">📉 SUB</option>
-          <option value="chip">👾 CHIPTUNE</option>
-        </select>
+        <select id="type"></select>
         <button id="add">+ ADD TRACK</button>
       </div>`;
-    this.shadowRoot.querySelector('#add').addEventListener('click', () => {
-      const type = this.shadowRoot.querySelector('#type').value;
-      this.dispatchEvent(new CustomEvent('add-track', {detail:{type}, bubbles:true, composed:true}));
-    });
   }
 }
 customElements.define('x-add-track-bar', XAddTrackBar);
 
+// XModalSynth — динамическая модалка
 class XModalSynth extends HTMLElement {
-  constructor() { super(); this.attachShadow({mode:'open'}); this.targetId = null; }
-  connectedCallback() { this.render(); this._setupEvents(); }
-  open(trackId, label) {
+  constructor() {
+    super();
+    this.attachShadow({mode:'open'});
+    this.targetId = null;
+    this.currentPlugin = null;
+    this.currentParams = null;
+  }
+  connectedCallback() {
+    this.render();
+    this._setupEvents();
+  }
+  open(trackId, label, plugin, currentParams) {
     this.targetId = trackId;
+    this.currentPlugin = plugin;
+    this.currentParams = currentParams;
     this.shadowRoot.querySelector('.title').textContent = `EDIT: ${label.toUpperCase()}`;
+    const paramsContainer = this.shadowRoot.querySelector('.params');
+    paramsContainer.innerHTML = '';
+    const groups = {};
+    plugin.params.forEach(p => {
+      const g = p.group || 'Main';
+      if (!groups[g]) groups[g] = [];
+      groups[g].push(p);
+    });
+    Object.entries(groups).forEach(([groupName, params]) => {
+      const groupEl = document.createElement('div');
+      groupEl.className = 'param-group';
+      groupEl.innerHTML = `<div class="group-title">${groupName}</div><div class="group-controls"></div>`;
+      const controls = groupEl.querySelector('.group-controls');
+      params.forEach(p => {
+        const control = this._createControl(p, currentParams[p.id]);
+        controls.appendChild(control);
+      });
+      paramsContainer.appendChild(groupEl);
+    });
+    if (plugin.presets && plugin.presets.length > 0) {
+      const presetsEl = document.createElement('div');
+      presetsEl.className = 'param-group';
+      presetsEl.innerHTML = `<div class="group-title">PRESETS</div><div class="preset-list"></div>`;
+      const list = presetsEl.querySelector('.preset-list');
+      plugin.presets.forEach(preset => {
+        const btn = document.createElement('button');
+        btn.className = 'preset-btn';
+        btn.textContent = preset.name;
+        btn.onclick = () => this._applyPreset(preset);
+        list.appendChild(btn);
+      });
+      paramsContainer.appendChild(presetsEl);
+    }
     this.shadowRoot.querySelector('dialog').showModal();
+  }
+  _createControl(param, currentValue) {
+    const value = currentValue !== undefined ? currentValue : param.default;
+    let el;
+    switch (param.type) {
+      case 'knob':
+        el = document.createElement('x-knob');
+        el.id = param.id;
+        el.setAttribute('min', param.min);
+        el.setAttribute('max', param.max);
+        el.setAttribute('value', value);
+        el.setAttribute('default', param.default);
+        el.setAttribute('label', param.label);
+        if (param.unit) el.setAttribute('unit', param.unit);
+        if (param.taper) el.setAttribute('taper', param.taper);
+        if (param.color) el.setAttribute('color', param.color);
+        break;
+      case 'select':
+        el = document.createElement('x-select');
+        el.id = param.id;
+        el.setAttribute('options', JSON.stringify(param.options));
+        el.setAttribute('value', value);
+        el.setAttribute('label', param.label);
+        break;
+      case 'toggle':
+        el = document.createElement('x-toggle');
+        el.id = param.id;
+        el.setAttribute('value', value);
+        el.setAttribute('label', param.label);
+        break;
+      case 'envelope':
+        el = document.createElement('x-envelope');
+        el.id = param.id;
+        el.setAttribute('value', JSON.stringify(value));
+        el.setAttribute('label', param.label);
+        break;
+      case 'wave':
+        const wrap = document.createElement('div');
+        wrap.style.display = 'flex';
+        wrap.style.flexDirection = 'column';
+        wrap.style.alignItems = 'center';
+        wrap.style.gap = '4px';
+        const preview = document.createElement('x-waveform-preview');
+        preview.setAttribute('wave', value);
+        const select = document.createElement('x-select');
+        select.id = param.id;
+        select.setAttribute('options', JSON.stringify(param.options));
+        select.setAttribute('value', value);
+        select.setAttribute('label', param.label);
+        select.addEventListener('input', (e) => {
+          preview.setAttribute('wave', e.detail.value);
+          this._emitChange(param.id, e.detail.value);
+        });
+        wrap.appendChild(preview);
+        wrap.appendChild(select);
+        return wrap;
+    }
+    if (el) {
+      el.addEventListener('input', (e) => {
+        this._emitChange(param.id, e.detail.value);
+      });
+    }
+    return el;
+  }
+  _emitChange(paramId, value) {
+    this.currentParams[paramId] = value;
+    this.dispatchEvent(new CustomEvent('synth-change', {
+      detail: { trackId: this.targetId, param: paramId, value: value },
+      bubbles: true, composed: true
+    }));
+  }
+  _applyPreset(preset) {
+    Object.entries(preset.params).forEach(([k, v]) => {
+      this.currentParams[k] = v;
+      const el = this.shadowRoot.querySelector(`[id="${k}"]`);
+      if (el) {
+        if (el.tagName === 'X-KNOB' || el.tagName === 'X-TOGGLE') el.setAttribute('value', v);
+        else if (el.tagName === 'X-SELECT') el.setAttribute('value', v);
+        else if (el.tagName === 'X-ENVELOPE') el.setAttribute('value', JSON.stringify(v));
+      }
+      this._emitChange(k, v);
+    });
   }
   _setupEvents() {
     const d = this.shadowRoot.querySelector('dialog');
     this.shadowRoot.querySelector('#close').addEventListener('click', () => d.close());
-    this.shadowRoot.addEventListener('input', (e) => {
-      if(e.target.tagName === 'X-KNOB') this.dispatchEvent(new CustomEvent('synth-change', {detail:{trackId:this.targetId, param:e.target.dataset.param, value:e.target.value}, bubbles:true, composed:true}));
-    });
   }
   render() {
     this.shadowRoot.innerHTML = `
       <style>
         dialog { background: transparent; border: none; padding: 0; outline: none; }
-        dialog::backdrop { background: rgba(3,3,5,0.85); backdrop-filter: blur(4px); }
-        .body { background: #0a0a0f; padding: 16px; width: 240px; border: 1px solid var(--border-color); border-radius: 6px; position: relative; }
-        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1px dashed #333; padding-bottom: 6px; }
-        .title { font-size: 10px; color: var(--neon-cyan); font-weight: bold; text-shadow: 0 0 4px rgba(0,243,255,0.5); }
-        #close { background: none; border: none; color: var(--neon-magenta); cursor: pointer; font-weight: bold; font-size: 14px; }
-        .knobs { display: flex; justify-content: space-around; gap: 8px; }
+        dialog::backdrop { background: rgba(3,3,5,0.85); backdrop-filter: blur(6px); }
+        .body { background: #0a0a0f; padding: 16px; width: 420px; max-width: 90vw; max-height: 80vh;
+                border: 1px solid var(--border-color); border-radius: 8px; position: relative;
+                overflow-y: auto; }
+        .header { display: flex; justify-content: space-between; align-items: center; 
+                  margin-bottom: 12px; border-bottom: 1px dashed #333; padding-bottom: 6px; }
+        .title { font-size: 11px; color: var(--neon-cyan); font-weight: bold; 
+                 text-shadow: 0 0 4px rgba(0,243,255,0.5); letter-spacing: 1px; }
+        #close { background: none; border: none; color: var(--neon-magenta); cursor: pointer; 
+                 font-weight: bold; font-size: 16px; }
+        #close:hover { text-shadow: 0 0 6px var(--neon-magenta); }
+        .params { display: flex; flex-direction: column; gap: 14px; }
+        .param-group { background: #050508; border: 1px solid #1a1a26; border-radius: 4px; padding: 10px; }
+        .group-title { font-size: 9px; color: var(--neon-magenta); text-transform: uppercase; 
+                       font-weight: bold; margin-bottom: 8px; letter-spacing: 1px; 
+                       text-shadow: 0 0 3px rgba(255,0,85,0.4); }
+        .group-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; }
+        .preset-list { display: flex; flex-wrap: wrap; gap: 6px; }
+        .preset-btn { background: #14141f; color: var(--neon-cyan); border: 1px solid var(--border-color);
+                      padding: 4px 10px; font-size: 9px; font-weight: bold; cursor: pointer; 
+                      border-radius: 3px; font-family: var(--font-mono); transition: all 0.1s; }
+        .preset-btn:hover { background: var(--neon-cyan); color: #000; box-shadow: 0 0 6px var(--neon-cyan); }
+        .body::-webkit-scrollbar { width: 6px; }
+        .body::-webkit-scrollbar-track { background: #050508; }
+        .body::-webkit-scrollbar-thumb { background: linear-gradient(180deg, #ff0055, #00f3ff); border-radius: 3px; }
       </style>
       <dialog>
         <div class="body">
-          <div class="header"><div class="title">EDIT SYNTH</div><button id="close">✕</button></div>
-          <div class="knobs">
-            <x-knob data-param="decay" min="50" max="1000" value="300" label="Decay"></x-knob>
-            <x-knob data-param="envMod" min="0" max="100" value="50" label="Env.Mod"></x-knob>
+          <div class="header">
+            <div class="title">EDIT SYNTH</div>
+            <button id="close">✕</button>
           </div>
+          <div class="params"></div>
         </div>
       </dialog>`;
   }
 }
 customElements.define('x-modal-synth', XModalSynth);
 
+// XRgbPanel
 class XRgbPanel extends HTMLElement {
   constructor() { super(); this.attachShadow({mode:'open'}); }
   connectedCallback() {
@@ -769,7 +1090,7 @@ class XRgbPanel extends HTMLElement {
 customElements.define('x-rgb-panel', XRgbPanel);
 
 // ==========================================
-// 3. MAIN ORCHESTRATOR (без Timeline, с Pattern Length)
+// MAIN ORCHESTRATOR
 // ==========================================
 class XSequencer extends HTMLElement {
   constructor() {
@@ -782,36 +1103,43 @@ class XSequencer extends HTMLElement {
     this.delay.output.connect(this.masterAnalyser);
     this.masterAnalyser.connect(this.ctx.destination);
     this.masterAnalyser.connect(this.recordDest);
-    this.drums = new DrumSynth(this.ctx);
-    this.voice = new SynthVoice(this.ctx);
-    this.poly = new PolySynth(this.ctx);
-    this.ext = new ExtendedSynths(this.ctx);
     this.scheduler = new SequencerScheduler(this.ctx, (step, time) => this._process(step, time));
     this.tracks = [];
     this.metro = false;
     this.recorder = null;
     this.chunks = [];
+    this.registry = window.CYBER_DAW.registry;
     this._initRecorder();
   }
   connectedCallback() {
     this.render();
     this.shadowRoot.querySelector('x-master-bar').setAnalyser(this.masterAnalyser);
     this._bindEvents();
-    this._add('kick', 'Kick');
-    this._add('snare', 'Snare');
-    this._add('bass', 'Bass');
+    this._updatePluginList();
+    this._add('drum.kick808', 'Kick');
+    this._add('drum.snare', 'Snare');
+    this._add('synth.subtractive', 'Bass');
   }
-  _add(type, label, mtrx, timeline, params) {
-    const gain = this.ctx.createGain(); const pan = this.ctx.createStereoPanner();
-    gain.connect(pan); pan.connect(this.delay.input);
-    const isMel = (type === 'bass' || type === 'synth' || type === 'fm' || type === 'sub' || type === 'chip');
-    const isPoly = (type === 'poly');
+  _updatePluginList() {
+    const addBar = this.shadowRoot.querySelector('x-add-track-bar');
+    if (addBar) addBar.setPlugins(this.registry.getAll());
+  }
+  _add(pluginId, label, matrix, params) {
+    const plugin = this.registry.get(pluginId);
+    if (!plugin) { console.error(`Plugin not found: ${pluginId}`); return; }
+    const gain = this.ctx.createGain();
+    const pan = this.ctx.createStereoPanner();
+    gain.connect(pan);
+    pan.connect(this.delay.input);
+    const defaults = {};
+    plugin.params.forEach(p => { defaults[p.id] = p.default; });
     this.tracks.push({
       id: 't_'+Date.now()+Math.random().toString(36).substr(2,4),
-      type, label, mute: false, gain, pan,
-      matrix: mtrx || Array(this.scheduler.maxSteps).fill(isMel ? 0 : (isPoly ? 'OFF' : false)),
-      synthParams: params || { decay: (type==='hat'?80:type==='noise'?500:300), envMod: 50 }
+      pluginId, label, mute: false, gain, pan,
+      matrix: matrix || Array(this.scheduler.maxSteps).fill(plugin.category === 'drum' ? false : 0),
+      params: { ...defaults, ...params }
     });
+    plugin.init(this.ctx, gain);
     this._refreshUI();
   }
   _remove(id) {
@@ -827,11 +1155,12 @@ class XSequencer extends HTMLElement {
     if (!c) return;
     const total = this.scheduler.maxSteps;
     c.innerHTML = this.tracks.map(t => {
-      const isMel = (t.type==='bass'||t.type==='synth'||t.type==='fm'||t.type==='sub'||t.type==='chip');
-      const isPoly = (t.type==='poly');
+      const plugin = this.registry.get(t.pluginId);
+      const isDrum = plugin && plugin.category === 'drum';
+      const isPoly = t.pluginId === 'synth.poly';
       const cells = Array(total).fill(null).map((_,i) => {
         if (isPoly) return `<x-chord-selector data-track-id="${t.id}" data-step="${i}"></x-chord-selector>`;
-        if (isMel) return `<x-note-selector data-track-id="${t.id}" data-step="${i}" data-freq="${t.matrix[i]||0}"></x-note-selector>`;
+        if (!isDrum) return `<x-note-selector data-track-id="${t.id}" data-step="${i}" data-freq="${t.matrix[i]||0}"></x-note-selector>`;
         const grp = Math.floor(i/4)%2===1 ? 'B' : 'A';
         return `<x-pad data-track-id="${t.id}" data-step="${i}" color-group="${grp}" ${t.matrix[i]?'active':''}></x-pad>`;
       }).join('');
@@ -847,10 +1176,11 @@ class XSequencer extends HTMLElement {
     r.querySelector('x-master-bar').addEventListener('bpm-change', e => this.scheduler.bpm = e.detail.bpm);
     r.querySelector('x-master-bar').addEventListener('metro-toggle', e => this.metro = e.detail);
     r.querySelector('x-add-track-bar').addEventListener('add-track', e => {
-      const type = e.detail.type;
-      const cnt = this.tracks.filter(t=>t.type===type).length+1;
-      const names = {kick:'Kick',snare:'Snare',hat:'HiHat',tom:'Tom',bass:'Bass',synth:'Synth',poly:'Poly',fm:'FM Bell',noise:'Noise',sub:'Sub',chip:'Chiptune'};
-      this._add(type, `${names[type]||type} ${cnt}`);
+      const pluginId = e.detail.pluginId;
+      const plugin = this.registry.get(pluginId);
+      if (!plugin) return;
+      const cnt = this.tracks.filter(t=>t.pluginId===pluginId).length+1;
+      this._add(pluginId, `${plugin.name} ${cnt}`);
     });
     r.addEventListener('delete-track', e => this._remove(e.detail.trackId));
     r.addEventListener('toggle', e => {
@@ -878,10 +1208,15 @@ class XSequencer extends HTMLElement {
       if (e.detail.param==='pan') t.pan.pan.linearRampToValueAtTime(e.detail.value/100, this.ctx.currentTime+0.05);
       if (e.detail.param==='mute') t.mute = e.detail.value===1;
     });
-    r.addEventListener('open-settings', e => r.querySelector('x-modal-synth').open(e.detail.trackId, e.detail.label));
+    r.addEventListener('open-settings', e => {
+      const track = this.tracks.find(t => t.id === e.detail.trackId);
+      if (!track) return;
+      const plugin = this.registry.get(track.pluginId);
+      r.querySelector('x-modal-synth').open(track.id, track.label, plugin, track.params);
+    });
     r.addEventListener('synth-change', e => {
       const t = this.tracks.find(x=>x.id===e.detail.trackId);
-      if (t) t.synthParams[e.detail.param] = parseFloat(e.detail.value);
+      if (t) t.params[e.detail.param] = e.detail.value;
     });
     r.querySelector('.length-selector').addEventListener('click', e => {
       if (!e.target.classList.contains('len-btn')) return;
@@ -890,9 +1225,11 @@ class XSequencer extends HTMLElement {
       const newLen = parseInt(e.target.dataset.len);
       this.scheduler.maxSteps = newLen;
       this.tracks.forEach(t => {
+        const plugin = this.registry.get(t.pluginId);
+        const isDrum = plugin && plugin.category === 'drum';
         const curr = t.matrix.length;
         if (newLen > curr) {
-          const extra = Array(newLen - curr).fill((t.type==='bass'||t.type==='synth'||t.type==='fm'||t.type==='sub'||t.type==='chip')?0:(t.type==='poly'?'OFF':false));
+          const extra = Array(newLen - curr).fill(isDrum ? false : 0);
           t.matrix = t.matrix.concat(extra);
         } else if (newLen < curr) {
           t.matrix = t.matrix.slice(0, newLen);
@@ -903,14 +1240,18 @@ class XSequencer extends HTMLElement {
     r.querySelector('x-fx-panel').addEventListener('fx-change', e => this.delay.set(e.detail.param, e.detail.value));
     r.querySelector('x-storage-panel').addEventListener('storage', e => {
       if (e.detail==='save') {
-        localStorage.setItem('cyber_daw', JSON.stringify({tracks: this.tracks.map(t=>({type:t.type,label:t.label,matrix:t.matrix,synthParams:t.synthParams})), bpm: this.scheduler.bpm, maxSteps: this.scheduler.maxSteps}));
+        localStorage.setItem('cyber_daw_v2', JSON.stringify({
+          tracks: this.tracks.map(t=>({pluginId:t.pluginId,label:t.label,matrix:t.matrix,params:t.params})),
+          bpm: this.scheduler.bpm,
+          maxSteps: this.scheduler.maxSteps
+        }));
         alert('Saved!');
       } else {
-        const d = JSON.parse(localStorage.getItem('cyber_daw'));
+        const d = JSON.parse(localStorage.getItem('cyber_daw_v2'));
         if (!d) return alert('No data');
         this.tracks = [];
         this.scheduler.maxSteps = d.maxSteps || 16;
-        d.tracks.forEach(t => this._add(t.type, t.label, t.matrix, undefined, t.synthParams));
+        d.tracks.forEach(t => this._add(t.pluginId, t.label, t.matrix, t.params));
         this.scheduler.bpm = d.bpm;
         this._refreshUI();
         const btns = this.shadowRoot.querySelectorAll('.len-btn');
@@ -939,18 +1280,11 @@ class XSequencer extends HTMLElement {
     }
     this.tracks.forEach(t => {
       if (t.mute) return;
-      const v = t.matrix[step];
-      const out = t.gain, p = t.synthParams;
-      if (t.type==='kick' && v) this.drums.playKick(time, out, p);
-      if (t.type==='snare' && v) this.drums.playSnare(time, out, p);
-      if (t.type==='hat' && v) this.drums.playHihat(time, out, p);
-      if (t.type==='tom' && v) this.drums.playTom(time, out, p);
-      if ((t.type==='bass'||t.type==='synth') && v>0) this.voice.playNote(v, time, out, p);
-      if (t.type==='poly' && v!=='OFF') this.poly.playChord(v, time, out);
-      if (t.type==='fm' && v>0) this.ext.playFMBell(v, time, out);
-      if (t.type==='noise' && v) this.ext.playNoiseSweep(time, out);
-      if (t.type==='sub' && v>0) this.ext.playSubBass(v, time, out);
-      if (t.type==='chip' && v>0) this.ext.playChiptune(v, time, out);
+      const plugin = this.registry.get(t.pluginId);
+      if (!plugin) return;
+      const value = t.matrix[step];
+      if (!value && value !== 0) return;
+      plugin.trigger(time, value, t.params, t.gain);
     });
   }
   _initRecorder() {
@@ -959,7 +1293,7 @@ class XSequencer extends HTMLElement {
     this.recorder.onstop = () => {
       const blob = new Blob(this.chunks, {type:'audio/webm'});
       const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
-      a.download = `cyber-daw-${Date.now()}.webm`; a.click();
+      a.download = `cyber-daw-v2-${Date.now()}.webm`; a.click();
       this.chunks = [];
     };
   }
@@ -979,33 +1313,17 @@ class XSequencer extends HTMLElement {
         .bottom-bar { display:flex; gap:16px; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; }
         .utils { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
         @media (max-width:700px) { :host{padding:10px} .main-grid{gap:10px} .track-row{flex-direction:column;align-items:flex-start;gap:4px} .pads-container{justify-content:flex-start} .bottom-bar{flex-direction:column;gap:10px} .bottom-bar>*{width:100%} }
-        /* Стилизация горизонтального скроллбара */
-.pads-container::-webkit-scrollbar {
-  height: 6px;
-}
-.pads-container::-webkit-scrollbar-track {
-  background: #0a0a0f;
-  border-radius: 3px;
-}
-.pads-container::-webkit-scrollbar-thumb {
-  background: linear-gradient(90deg, #ff0055, #00f3ff);
-  border-radius: 3px;
-  box-shadow: inset 0 0 4px rgba(0,0,0,0.8);
-}
-.pads-container::-webkit-scrollbar-thumb:hover {
-  background: linear-gradient(90deg, #00f3ff, #ff0055);
-}
-/* Firefox */
-.pads-container {
-  scrollbar-width: thin;
-  scrollbar-color: #ff0055 #0a0a0f;
-}
+        .pads-container::-webkit-scrollbar { height: 6px; }
+        .pads-container::-webkit-scrollbar-track { background: #0a0a0f; border-radius: 3px; }
+        .pads-container::-webkit-scrollbar-thumb { background: linear-gradient(90deg, #ff0055, #00f3ff); border-radius: 3px; box-shadow: inset 0 0 4px rgba(0,0,0,0.8); }
+        .pads-container::-webkit-scrollbar-thumb:hover { background: linear-gradient(90deg, #00f3ff, #ff0055); }
+        .pads-container { scrollbar-width: thin; scrollbar-color: #ff0055 #0a0a0f; }
       </style>
       <x-rgb-panel><x-master-bar></x-master-bar></x-rgb-panel>
       <div class="main-grid">
         <x-rgb-panel>
           <div class="tracks-header">
-            <span>STEP SEQUENCER / PIANO ROLL</span>
+            <span>STEP SEQUENCER / PLUGIN HOST</span>
             <div style="display:flex; gap:8px; align-items:center;">
               <div class="length-selector">
                 <button class="len-btn active" data-len="16">16</button>
@@ -1034,5 +1352,18 @@ class XSequencer extends HTMLElement {
 }
 customElements.define('x-sequencer', XSequencer);
 </script>
+
+<!-- Подключите плагины здесь -->
+<script type="module" src="./plugins/kick808.js"></script>
+<script type="module" src="./plugins/snare.js"></script>
+<script type="module" src="./plugins/hihat.js"></script>
+<script type="module" src="./plugins/tom.js"></script>
+<script type="module" src="./plugins/subtractive.js"></script>
+<script type="module" src="./plugins/fmbell.js"></script>
+<script type="module" src="./plugins/poly.js"></script>
+<script type="module" src="./plugins/subbass.js"></script>
+<script type="module" src="./plugins/chiptune.js"></script>
+<script type="module" src="./plugins/noisesweep.js"></script>
+
 </body>
 </html>
