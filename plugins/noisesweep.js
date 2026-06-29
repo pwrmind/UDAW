@@ -1,5 +1,5 @@
 // plugins/noisesweep.js
-export default {
+const plugin = {
   id: 'fx.noisesweep',
   name: '🌪️ Noise Sweep',
   category: 'fx',
@@ -55,4 +55,5 @@ export default {
   }
 };
 
-window.CYBER_DAW.registry.register(window.CYBER_DAW.plugins.noisesweep);
+window.CYBER_DAW.registry.register(plugin);
+export default plugin;

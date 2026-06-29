@@ -1,5 +1,5 @@
 // plugins/poly.js
-export default {
+const plugin = {
   id: 'synth.poly',
   name: '🎛️ Poly Chords',
   category: 'synth',
@@ -57,4 +57,5 @@ export default {
   }
 };
 
-window.CYBER_DAW.registry.register(window.CYBER_DAW.plugins.poly);
+window.CYBER_DAW.registry.register(plugin);
+export default plugin;

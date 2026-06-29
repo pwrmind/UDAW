@@ -1,5 +1,5 @@
 // plugins/subbass.js
-export default {
+const plugin = {
   id: 'synth.subbass',
   name: '📉 Sub Bass',
   category: 'synth',
@@ -40,4 +40,5 @@ export default {
   }
 };
 
-window.CYBER_DAW.registry.register(window.CYBER_DAW.plugins.subbass);
+window.CYBER_DAW.registry.register(plugin);
+export default plugin;

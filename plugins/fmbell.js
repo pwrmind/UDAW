@@ -1,5 +1,5 @@
 // plugins/fmbell.js
-export default {
+const plugin = {
   id: 'synth.fmbell',
   name: '🔔 FM Bell',
   category: 'synth',
@@ -67,4 +67,5 @@ export default {
   }
 };
 
-window.CYBER_DAW.registry.register(window.CYBER_DAW.plugins.fmbell);
+window.CYBER_DAW.registry.register(plugin);
+export default plugin;

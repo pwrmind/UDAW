@@ -1,5 +1,5 @@
 // plugins/tom.js
-export default {
+const plugin = {
   id: 'drum.tom',
   name: '🪘 Tom',
   category: 'drum',
@@ -44,4 +44,5 @@ export default {
   }
 };
 
-window.CYBER_DAW.registry.register(window.CYBER_DAW.plugins.tom);
+window.CYBER_DAW.registry.register(plugin);
+export default plugin;

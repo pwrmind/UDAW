@@ -1,5 +1,5 @@
 // plugins/chiptune.js
-export default {
+const plugin = {
   id: 'synth.chiptune',
   name: '👾 Chiptune',
   category: 'synth',
@@ -41,4 +41,5 @@ export default {
   }
 };
 
-window.CYBER_DAW.registry.register(window.CYBER_DAW.plugins.chiptune);
+window.CYBER_DAW.registry.register(plugin);
+export default plugin;

@@ -1,5 +1,5 @@
 // plugins/subtractive.js
-export default {
+const plugin = {
   id: 'synth.subtractive',
   name: '🎹 Subtractive Lead',
   category: 'synth',
@@ -131,4 +131,5 @@ export default {
   }
 };
 
-window.CYBER_DAW.registry.register(window.CYBER_DAW.plugins.subtractive);
+window.CYBER_DAW.registry.register(plugin);
+export default plugin;

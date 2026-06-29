@@ -1,5 +1,5 @@
 // plugins/snare.js
-export default {
+const plugin = {
   id: 'drum.snare',
   name: '🥁 Snare',
   category: 'drum',
@@ -29,7 +29,6 @@ export default {
     const ctx = this.ctx;
     const decay = (p.decay || 200) / 1000;
     
-    // Тональная часть (body)
     if ((p.body || 0) > 0) {
       const osc = ctx.createOscillator();
       const oscGain = ctx.createGain();
@@ -44,7 +43,6 @@ export default {
       osc.stop(time + decay);
     }
     
-    // Шумовая часть (snappy)
     if ((p.snappy || 0) > 0) {
       const buf = ctx.createBuffer(1, ctx.sampleRate * decay, ctx.sampleRate);
       const data = buf.getChannelData(0);
@@ -71,4 +69,5 @@ export default {
   }
 };
 
-window.CYBER_DAW.registry.register(window.CYBER_DAW.plugins.snare);
+window.CYBER_DAW.registry.register(plugin);
+export default plugin;

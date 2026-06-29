@@ -1,7 +1,5 @@
 // plugins/kick808.js
-import { registry } from '../main.js'; // или используйте window.CYBER_DAW.registry
-
-export default {
+const plugin = {
   id: 'drum.kick808',
   name: '🥁 808 Kick',
   category: 'drum',
@@ -93,4 +91,6 @@ export default {
   }
 };
 
-window.CYBER_DAW.registry.register(window.CYBER_DAW.plugins.kick808);
+// Правильная регистрация
+window.CYBER_DAW.registry.register(plugin);
+export default plugin;

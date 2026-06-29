@@ -1116,13 +1116,36 @@ class XSequencer extends HTMLElement {
     this.shadowRoot.querySelector('x-master-bar').setAnalyser(this.masterAnalyser);
     this._bindEvents();
     this._updatePluginList();
-    this._add('drum.kick808', 'Kick');
-    this._add('drum.snare', 'Snare');
-    this._add('synth.subtractive', 'Bass');
+    
+    // Ждем загрузки плагинов перед инициализацией треков
+    this._waitForPlugins().then(() => {
+      this._updatePluginList();
+      this._add('drum.kick808', 'Kick');
+      this._add('drum.snare', 'Snare');
+      this._add('synth.subtractive', 'Bass');
+    });
   }
+
+  _waitForPlugins() {
+    return new Promise(resolve => {
+      const check = () => {
+        const required = ['drum.kick808', 'drum.snare', 'synth.subtractive'];
+        const loaded = required.every(id => this.registry.get(id));
+        if (loaded) resolve();
+        else setTimeout(check, 50);
+      };
+      check();
+    });
+  }
+
   _updatePluginList() {
     const addBar = this.shadowRoot.querySelector('x-add-track-bar');
-    if (addBar) addBar.setPlugins(this.registry.getAll());
+    if (addBar) {
+      const plugins = this.registry.getAll();
+      if (plugins.length > 0) {
+        addBar.setPlugins(plugins);
+      }
+    }
   }
   _add(pluginId, label, matrix, params) {
     const plugin = this.registry.get(pluginId);
